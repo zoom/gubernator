@@ -56,11 +56,11 @@ type BehaviorConfig struct {
 	GlobalBatchLimit int
 
 	// How long the current region will collect request before pushing them to other regions
-	MultiRegionSyncWait time.Duration
+	MultiClusterSyncWait time.Duration
 	// How long the current region will wait for responses from other regions
-	MultiRegionTimeout time.Duration
+	MultiClusterTimeout time.Duration
 	// The max number of requests the current region will collect
-	MultiRegionBatchLimit int
+	MultiClusterBatchLimit int
 }
 
 // Config for a gubernator instance
@@ -89,13 +89,17 @@ type Config struct {
 	LocalPicker PeerPicker
 
 	// (Optional) This is the peer picker algorithm the server will use when deciding which remote peer to forward
-	// rate limits too when a `Config.DataCenter` is set to something other than empty string.
+	// rate limits too when a `Config.ClusterName` is set to something other than empty string.
 	RegionPicker RegionPeerPicker
 
-	// (Optional) This is the name of our local data center. This value will be used by LocalPicker when
-	// deciding who we should immediately connect too for our local picker. Should remain empty if not
-	// using multi data center support.
-	DataCenter string
+	// (Optional) This is the name of our local cluster. Typically, a single cluster is defined per datacenter,
+	// but it is possible depending on your need, to have multiple clusters per datacenter or availability zone.
+	// This value is used by LocalPicker when deciding which peers are in our local cluster, and should match
+	// the CLUSTER_NAME set when defining the peer discovery type, which will be included in PeerInfo.ClusterName
+	// which is provided to SetPeers().
+	//
+	// Should remain empty if not running in a multi cluster environment.
+	ClusterName string
 
 	// (Optional) A Logger which implements the declared logger interface (typically *logrus.Entry)
 	Logger logrus.FieldLogger
@@ -113,9 +117,9 @@ func (c *Config) SetDefaults() error {
 	setter.SetDefault(&c.Behaviors.GlobalBatchLimit, maxBatchSize)
 	setter.SetDefault(&c.Behaviors.GlobalSyncWait, time.Microsecond*500)
 
-	setter.SetDefault(&c.Behaviors.MultiRegionTimeout, time.Millisecond*500)
-	setter.SetDefault(&c.Behaviors.MultiRegionBatchLimit, maxBatchSize)
-	setter.SetDefault(&c.Behaviors.MultiRegionSyncWait, time.Second)
+	setter.SetDefault(&c.Behaviors.MultiClusterTimeout, time.Millisecond*500)
+	setter.SetDefault(&c.Behaviors.MultiClusterBatchLimit, maxBatchSize)
+	setter.SetDefault(&c.Behaviors.MultiClusterSyncWait, time.Second)
 
 	setter.SetDefault(&c.LocalPicker, NewReplicatedConsistentHash(nil, defaultReplicas))
 	setter.SetDefault(&c.RegionPicker, NewRegionPicker(nil))
@@ -135,7 +139,7 @@ func (c *Config) SetDefaults() error {
 
 type PeerInfo struct {
 	// (Optional) The name of the data center this peer is in. Leave blank if not using multi data center support.
-	DataCenter string `json:"data-center"`
+	ClusterName string `json:"cluster-name"`
 	// (Optional) The http address:port of the peer
 	HTTPAddress string `json:"http-address"`
 	// (Required) The grpc address:port of the peer
@@ -174,9 +178,9 @@ type DaemonConfig struct {
 	// (Optional) Configure how behaviours behave
 	Behaviors BehaviorConfig
 
-	// (Optional) Identifies the datacenter this instance is running in. For
-	// use with multi-region support
-	DataCenter string
+	// (Optional) Identifies the cluster this instance is running in. For
+	// use with multi-cluster support
+	ClusterName string
 
 	// (Optional) Which pool to use when discovering other Gubernator peers
 	//  Valid options are [etcd, k8s, member-list] (Defaults to 'member-list')
@@ -247,7 +251,7 @@ func SetupDaemonConfig(logger *logrus.Logger, configFile string) (DaemonConfig, 
 	setter.SetDefault(&conf.GRPCMaxConnectionAgeSeconds, getEnvInteger(log, "GUBER_GRPC_MAX_CONN_AGE_SEC"), 0)
 	setter.SetDefault(&conf.CacheSize, getEnvInteger(log, "GUBER_CACHE_SIZE"), 50_000)
 	setter.SetDefault(&conf.AdvertiseAddress, os.Getenv("GUBER_ADVERTISE_ADDRESS"), conf.GRPCListenAddress)
-	setter.SetDefault(&conf.DataCenter, os.Getenv("GUBER_DATA_CENTER"), "")
+	setter.SetDefault(&conf.ClusterName, os.Getenv("GUBER_CLUSTER_NAME"), "")
 	setter.SetDefault(&conf.MetricFlags, getEnvMetricFlags(log, "GUBER_METRIC_FLAGS"))
 
 	advAddr, advPort, err := net.SplitHostPort(conf.AdvertiseAddress)
@@ -269,9 +273,9 @@ func SetupDaemonConfig(logger *logrus.Logger, configFile string) (DaemonConfig, 
 	setter.SetDefault(&conf.Behaviors.GlobalBatchLimit, getEnvInteger(log, "GUBER_GLOBAL_BATCH_LIMIT"))
 	setter.SetDefault(&conf.Behaviors.GlobalSyncWait, getEnvDuration(log, "GUBER_GLOBAL_SYNC_WAIT"))
 
-	setter.SetDefault(&conf.Behaviors.MultiRegionTimeout, getEnvDuration(log, "GUBER_MULTI_REGION_TIMEOUT"))
-	setter.SetDefault(&conf.Behaviors.MultiRegionBatchLimit, getEnvInteger(log, "GUBER_MULTI_REGION_BATCH_LIMIT"))
-	setter.SetDefault(&conf.Behaviors.MultiRegionSyncWait, getEnvDuration(log, "GUBER_MULTI_REGION_SYNC_WAIT"))
+	setter.SetDefault(&conf.Behaviors.MultiClusterTimeout, getEnvDuration(log, "GUBER_MULTI_CLUSTER_TIMEOUT"))
+	setter.SetDefault(&conf.Behaviors.MultiClusterBatchLimit, getEnvInteger(log, "GUBER_MULTI_CLUSTER_BATCH_LIMIT"))
+	setter.SetDefault(&conf.Behaviors.MultiClusterSyncWait, getEnvDuration(log, "GUBER_MULTI_CLUSTER_SYNC_WAIT"))
 
 	choices := []string{"member-list", "k8s", "etcd", "dns"}
 	setter.SetDefault(&conf.PeerDiscoveryType, os.Getenv("GUBER_PEER_DISCOVERY_TYPE"), "member-list")
@@ -317,12 +321,12 @@ func SetupDaemonConfig(logger *logrus.Logger, configFile string) (DaemonConfig, 
 	setter.SetDefault(&conf.EtcdPoolConf.EtcdConfig.Username, os.Getenv("GUBER_ETCD_USER"))
 	setter.SetDefault(&conf.EtcdPoolConf.EtcdConfig.Password, os.Getenv("GUBER_ETCD_PASSWORD"))
 	setter.SetDefault(&conf.EtcdPoolConf.Advertise.GRPCAddress, os.Getenv("GUBER_ETCD_ADVERTISE_ADDRESS"), conf.AdvertiseAddress)
-	setter.SetDefault(&conf.EtcdPoolConf.Advertise.DataCenter, os.Getenv("GUBER_ETCD_DATA_CENTER"), conf.DataCenter)
+	setter.SetDefault(&conf.EtcdPoolConf.Advertise.ClusterName, os.Getenv("GUBER_ETCD_CLUSTER_NAME"), conf.ClusterName)
 
 	setter.SetDefault(&conf.MemberListPoolConf.Advertise.GRPCAddress, os.Getenv("GUBER_MEMBERLIST_ADVERTISE_ADDRESS"), conf.AdvertiseAddress)
 	setter.SetDefault(&conf.MemberListPoolConf.MemberListAddress, os.Getenv("GUBER_MEMBERLIST_ADDRESS"), fmt.Sprintf("%s:7946", advAddr))
 	setter.SetDefault(&conf.MemberListPoolConf.KnownNodes, getEnvSlice("GUBER_MEMBERLIST_KNOWN_NODES"), []string{})
-	setter.SetDefault(&conf.MemberListPoolConf.Advertise.DataCenter, conf.DataCenter)
+	setter.SetDefault(&conf.MemberListPoolConf.Advertise.ClusterName, conf.ClusterName)
 
 	// Kubernetes Config
 	setter.SetDefault(&conf.K8PoolConf.Namespace, os.Getenv("GUBER_K8S_NAMESPACE"), "default")

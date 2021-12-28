@@ -122,11 +122,6 @@ enum Behavior {
   // cache value. For `LEAKY_BUCKET` it sets the `Remaining` to `Limit`.
   RESET_REMAINING = 8;
 
-  // Enables rate limits to be pushed to other regions. Currently this is only implemented when using
-  // 'member-list' peer discovery. Also requires GUBER_DATA_CENTER to be set to different values on at
-  // least 2 instances of Gubernator.
-  MULTI_REGION = 16;
-
   // TODO: Add support for LOCAL. Which would force the rate limit to be handled by the local instance
 }
 
@@ -159,6 +154,10 @@ message RateLimitReq {
 
   // Maximum burst size that the limit can accept.
   int64 burst = 8;
+
+  // The name of the replica group this rate limit should be replicated too.
+  // If empty no replication is performed.
+  string replica = 9;
 }
 
 enum Status {

@@ -22,11 +22,12 @@
 package gubernator
 
 import (
+	reflect "reflect"
+	sync "sync"
+
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
-	reflect "reflect"
-	sync "sync"
 )
 
 const (
@@ -145,6 +146,7 @@ const (
 	// Enables rate limits to be pushed to other regions. Currently this is only implemented when using
 	// 'member-list' peer discovery. Also requires GUBER_DATA_CENTER to be set to different values on at
 	// least 2 instances of Gubernator.
+	// deprecated
 	Behavior_MULTI_REGION Behavior = 16
 )
 

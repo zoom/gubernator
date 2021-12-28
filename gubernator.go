@@ -383,6 +383,8 @@ func (s *V1Instance) getRateLimit(r *RateLimitReq) (*RateLimitResp, error) {
 		s.global.QueueUpdate(r)
 	}
 
+	// TODO: This should check for a cluster name specified so we know which
+	//  cluster to forward the rate limit too.
 	if HasBehavior(r.Behavior, Behavior_MULTI_REGION) {
 		s.mutliRegion.QueueHits(r)
 	}
@@ -403,7 +405,7 @@ func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 
 	for _, info := range peerInfo {
 		// Add peers that are not in our local DC to the RegionPicker
-		if info.DataCenter != s.conf.DataCenter {
+		if info.ClusterName != s.conf.ClusterName {
 			peer := s.conf.RegionPicker.GetByPeerInfo(info)
 			// If we don't have an existing PeerClient create a new one
 			if peer == nil {

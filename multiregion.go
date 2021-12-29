@@ -5,7 +5,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type mutliRegionManager struct {
+type mutliClusterManager struct {
 	reqQueue chan *RateLimitReq
 	wg       syncutil.WaitGroup
 	conf     BehaviorConfig
@@ -13,8 +13,8 @@ type mutliRegionManager struct {
 	instance *V1Instance
 }
 
-func newMultiRegionManager(conf BehaviorConfig, instance *V1Instance) *mutliRegionManager {
-	mm := mutliRegionManager{
+func newMultiClusterManager(conf BehaviorConfig, instance *V1Instance) *mutliClusterManager {
+	mm := mutliClusterManager{
 		conf:     conf,
 		instance: instance,
 		log:      instance.log,
@@ -24,12 +24,12 @@ func newMultiRegionManager(conf BehaviorConfig, instance *V1Instance) *mutliRegi
 	return &mm
 }
 
-// QueueHits writes the RateLimitReq to be asynchronously sent to other regions
-func (mm *mutliRegionManager) QueueHits(r *RateLimitReq) {
+// QueueHits writes the RateLimitReq to be asynchronously sent to other clusters
+func (mm *mutliClusterManager) QueueHits(r *RateLimitReq) {
 	mm.reqQueue <- r
 }
 
-func (mm *mutliRegionManager) runAsyncReqs() {
+func (mm *mutliClusterManager) runAsyncReqs() {
 	var interval = NewInterval(mm.conf.MultiClusterSyncWait)
 	hits := make(map[string]*RateLimitReq)
 
@@ -78,10 +78,10 @@ func (mm *mutliRegionManager) runAsyncReqs() {
 
 // TODO: Sending cross DC should mainly update the hits, the config should not be sent, or ignored when received
 // TODO: Calculation of OVERLIMIT should not occur when sending hits cross DC
-func (mm *mutliRegionManager) sendHits(r map[string]*RateLimitReq, picker PeerPicker) {
+func (mm *mutliClusterManager) sendHits(r map[string]*RateLimitReq, picker PeerPicker) {
 	// Does nothing for now
 }
 
-func (mm *mutliRegionManager) Close() {
+func (mm *mutliClusterManager) Close() {
 	mm.wg.Stop()
 }

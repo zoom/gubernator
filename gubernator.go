@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	maxBatchSize = 1000
+	maxBatchSize = 10_000
 	Healthy      = "healthy"
 	UnHealthy    = "unhealthy"
 )
@@ -41,12 +41,12 @@ const (
 type V1Instance struct {
 	UnimplementedV1Server
 	UnimplementedPeersV1Server
-	global       *globalManager
-	mutliCluster *mutliClusterManager
-	peerMutex    sync.RWMutex
-	log          logrus.FieldLogger
-	conf         Config
-	isClosed     bool
+	broadcast     *broadcastManager
+	remoteCluster *remoteClusterManager
+	peerMutex     sync.RWMutex
+	log           logrus.FieldLogger
+	conf          Config
+	isClosed      bool
 }
 
 // NewV1Instance instantiate a single instance of a gubernator peer and registers this
@@ -65,8 +65,8 @@ func NewV1Instance(conf Config) (*V1Instance, error) {
 	}
 	setter.SetDefault(&s.log, logrus.WithField("category", "gubernator"))
 
-	s.global = newGlobalManager(conf.Behaviors, &s)
-	s.mutliCluster = newMultiClusterManager(conf.Behaviors, &s)
+	s.broadcast = newBroadcastManager(conf.Behaviors, &s)
+	s.remoteCluster = newRemoteClusterManager(conf.Behaviors, &s)
 
 	// Register our instance with all GRPC servers
 	for _, srv := range conf.GRPCServers {
@@ -98,8 +98,8 @@ func (s *V1Instance) Close() error {
 		return nil
 	}
 
-	s.global.Close()
-	s.mutliCluster.Close()
+	s.broadcast.Close()
+	s.remoteCluster.Close()
 
 	out := make(chan *CacheItem, 500)
 	go func() {
@@ -273,7 +273,7 @@ func (s *V1Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, erro
 	// NOTE: The defer here avoids a race condition where we queue the req to
 	// be forwarded to the owning peer in a separate goroutine but simultaneously
 	// access and possibly copy the req in this method.
-	defer s.global.QueueHit(req)
+	defer s.broadcast.QueueHit(req)
 
 	s.conf.Cache.Lock()
 	item, ok := s.conf.Cache.GetItem(req.HashKey())
@@ -294,8 +294,8 @@ func (s *V1Instance) getGlobalRateLimit(req *RateLimitReq) (*RateLimitResp, erro
 	return resp, err
 }
 
-// UpdatePeerGlobals updates the local cache with a list of global rate limits. This method should only
-// be called by a peer who is the owner of a global rate limit.
+// UpdatePeerGlobals updates the local cache with a list of broadcast rate limits. This method should only
+// be called by a peer who is the owner of a broadcast rate limit.
 func (s *V1Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (*UpdatePeerGlobalsResp, error) {
 	s.conf.Cache.Lock()
 	defer s.conf.Cache.Unlock()
@@ -311,85 +311,49 @@ func (s *V1Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobals
 	return &UpdatePeerGlobalsResp{}, nil
 }
 
-// UpdateRateLimits updates the local cache with a list of rate limits from another region.
+// UpdateRateLimits updates the local cache with a list of rate limits from another cluster
 func (s *V1Instance) UpdateRateLimits(ctx context.Context, r *UpdateRateLimitsReq) (*UpdateRateLimitsResp, error) {
 	log := s.log.WithField("method", "UpdateRateLimits()")
 	s.conf.Cache.Lock()
 	defer s.conf.Cache.Unlock()
 
+	var prl GetPeerRateLimitsReq
 	for _, rl := range r.RateLimits {
 		// Check for context cancel
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 
-		// Verify we own this rate limit as we could be receiving a batch of rate limits we don't own.
-		key := rl.Name + "_" + rl.UniqueKey
-		peer, err := s.GetPeer(key)
-		if err != nil {
-			log.WithError(err).Errorf("while creating rate limit")
-			continue
-		}
+		// Avoid computing who owns the rate limit if the caller is already sure we own this rl.
+		if !HasBehavior(rl.Behavior, Behavior_HASH_COMPUTED) {
+			// Verify we own this rate limit as we could be receiving a batch of rate limits we don't own.
+			key := rl.Name + "_" + rl.UniqueKey
+			peer, err := s.GetPeer(key)
+			if err != nil {
+				log.WithError(err).Errorf("while creating rate limit")
+				continue
+			}
 
-		if !peer.Info().IsOwner {
-			// TODO: If the peer is not us, then queue for delivery to node in our local cluster
+			if !peer.Info().IsOwner {
+				// If the peer is not us, then queue for delivery to node in our local cluster
+				s.broadcast.QueueHit(rl)
+				continue
+			}
 		}
 
 		// Clear the GLOBAL behavior flag and replica value, so we don't
-		// get queued to be delivered to a remote cluster.
+		// get queued to be delivered to a remote cluster again.
 		SetBehavior(&rl.Behavior, Behavior_GLOBAL, false)
 		rl.Replica = ""
-
-		// Does the rate limit already exist in the local cache?
-		i, ok := s.conf.Cache.GetItem(rl.HashKey())
-		if !ok {
-			_, err := s.getRateLimit(rl)
-			if err != nil {
-				log.WithError(err).Errorf("while creating rate limit")
-			}
-			continue
-		}
-
-		var attempts int
-	retry:
-		if attempts > 1 {
-			log.Errorf("local algorithm doesn't match algorithm from remote peer")
-			continue
-		}
-
-		// Attempt to increment the hits, we have no need to evaluate the result of the rate
-		// limit, only record an increase in recorded hits from other clusters. The next local
-		// cluster hit for a rate limit should evaluate and return the correct over/under limit response.
-
-		// If the algorithm switched on us, switch algorithms and retry only once.
-		// **When adding more algorithms, please increase the number of attempts to match**
-		switch rl.Algorithm {
-		case Algorithm_TOKEN_BUCKET:
-			t, ok := i.Value.(*TokenBucketItem)
-			if !ok {
-				rl.Algorithm = Algorithm_LEAKY_BUCKET
-				attempts++
-				goto retry
-			}
-			// Adjust the remaining based on the hits
-			t.Remaining -= rl.Hits
-			if t.Remaining < 0 {
-				t.Remaining = 0
-			}
-		case Algorithm_LEAKY_BUCKET:
-			t, ok := i.Value.(*LeakyBucketItem)
-			if !ok {
-				rl.Algorithm = Algorithm_TOKEN_BUCKET
-				attempts++
-				goto retry
-			}
-			// Adjust the remaining based on the hits
-			t.Remaining -= float64(rl.Hits)
-			if int64(t.Remaining) < 0 {
-				t.Remaining = 0
-			}
-		}
+		prl.Requests = append(prl.Requests, rl)
 	}
+
+	// Spin this out into a go routine, so we can get off the wire sooner
+	go func() {
+		if _, err := s.GetPeerRateLimits(ctx, &prl); err != nil {
+			log.WithError(err).Errorf("error recording local hits")
+		}
+	}()
 	return &UpdateRateLimitsResp{}, nil
 }
 
@@ -462,11 +426,11 @@ func (s *V1Instance) getRateLimit(r *RateLimitReq) (*RateLimitResp, error) {
 	defer s.conf.Cache.Unlock()
 
 	if HasBehavior(r.Behavior, Behavior_GLOBAL) {
-		s.global.QueueUpdate(r)
+		s.broadcast.QueueUpdate(r)
 	}
 
 	if r.Replica != "" {
-		s.mutliCluster.QueueHits(r)
+		s.remoteCluster.QueueHits(r)
 	}
 
 	switch r.Algorithm {
@@ -587,14 +551,14 @@ func (s *V1Instance) GetRegionPickers() map[string]PeerPicker {
 
 // Describe fetches prometheus metrics to be registered
 func (s *V1Instance) Describe(ch chan<- *prometheus.Desc) {
-	ch <- s.global.asyncMetrics.Desc()
-	ch <- s.global.broadcastMetrics.Desc()
+	ch <- s.broadcast.asyncMetrics.Desc()
+	ch <- s.broadcast.broadcastMetrics.Desc()
 }
 
 // Collect fetches metrics from the server for use by prometheus
 func (s *V1Instance) Collect(ch chan<- prometheus.Metric) {
-	ch <- s.global.asyncMetrics
-	ch <- s.global.broadcastMetrics
+	ch <- s.broadcast.asyncMetrics
+	ch <- s.broadcast.broadcastMetrics
 }
 
 // HasBehavior returns true if the provided behavior is set

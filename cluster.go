@@ -5,7 +5,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-type mutliClusterManager struct {
+type remoteClusterManager struct {
 	reqQueue chan *RateLimitReq
 	wg       syncutil.WaitGroup
 	conf     BehaviorConfig
@@ -13,8 +13,8 @@ type mutliClusterManager struct {
 	instance *V1Instance
 }
 
-func newMultiClusterManager(conf BehaviorConfig, instance *V1Instance) *mutliClusterManager {
-	mm := mutliClusterManager{
+func newRemoteClusterManager(conf BehaviorConfig, instance *V1Instance) *remoteClusterManager {
+	mm := remoteClusterManager{
 		conf:     conf,
 		instance: instance,
 		log:      instance.log,
@@ -25,11 +25,11 @@ func newMultiClusterManager(conf BehaviorConfig, instance *V1Instance) *mutliClu
 }
 
 // QueueHits writes the RateLimitReq to be asynchronously sent to other clusters
-func (mm *mutliClusterManager) QueueHits(r *RateLimitReq) {
+func (mm *remoteClusterManager) QueueHits(r *RateLimitReq) {
 	mm.reqQueue <- r
 }
 
-func (mm *mutliClusterManager) runAsyncReqs() {
+func (mm *remoteClusterManager) runAsyncReqs() {
 	var interval = NewInterval(mm.conf.MultiClusterSyncWait)
 	hits := make(map[string]*RateLimitReq)
 
@@ -78,10 +78,10 @@ func (mm *mutliClusterManager) runAsyncReqs() {
 
 // TODO: Sending cross DC should mainly update the hits, the config should not be sent, or ignored when received
 // TODO: Calculation of OVERLIMIT should not occur when sending hits cross DC
-func (mm *mutliClusterManager) sendHits(r map[string]*RateLimitReq, picker PeerPicker) {
+func (mm *remoteClusterManager) sendHits(r map[string]*RateLimitReq, picker PeerPicker) {
 	// Does nothing for now
 }
 
-func (mm *mutliClusterManager) Close() {
+func (mm *remoteClusterManager) Close() {
 	mm.wg.Stop()
 }

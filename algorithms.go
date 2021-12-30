@@ -123,10 +123,15 @@ func tokenBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 			return rl, nil
 		}
 
-		// If requested is more than available, then return over the limit without updating the cache.
+		// If requested is more than available, then set over the limit
 		if r.Hits > t.Remaining {
 			rl.Status = Status_OVER_LIMIT
-			return rl, nil
+
+			// Unless client requests to always count the hits, we return
+			// here without updating the remaining.
+			if !HasBehavior(r.Behavior, Behavior_ALWAYS_COUNT_HITS) {
+				return rl, nil
+			}
 		}
 
 		t.Remaining -= r.Hits
@@ -259,7 +264,7 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 			Limit:     b.Limit,
 			Remaining: int64(b.Remaining),
 			Status:    Status_UNDER_LIMIT,
-			ResetTime: now + (b.Limit - int64(b.Remaining)) * int64(rate),
+			ResetTime: now + (b.Limit-int64(b.Remaining))*int64(rate),
 		}
 
 		if s != nil {
@@ -278,15 +283,19 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 		if int64(b.Remaining) == r.Hits {
 			b.Remaining -= float64(r.Hits)
 			rl.Remaining = 0
-			rl.ResetTime = now + (rl.Limit - rl.Remaining) * int64(rate)
+			rl.ResetTime = now + (rl.Limit-rl.Remaining)*int64(rate)
 			return rl, nil
 		}
 
-		// If requested is more than available, then return over the limit
-		// without updating the bucket.
+		// If requested is more than available, then set over the limit
 		if r.Hits > int64(b.Remaining) {
 			rl.Status = Status_OVER_LIMIT
-			return rl, nil
+
+			// Unless client requests to always count the hits, we return
+			// here without updating the remaining.
+			if !HasBehavior(r.Behavior, Behavior_ALWAYS_COUNT_HITS) {
+				return rl, nil
+			}
 		}
 
 		// Client is only interested in retrieving the current status
@@ -296,8 +305,8 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 
 		b.Remaining -= float64(r.Hits)
 		rl.Remaining = int64(b.Remaining)
-		rl.ResetTime = now + (rl.Limit - rl.Remaining) * int64(rate)
-		c.UpdateExpiration(r.HashKey(), now + duration)
+		rl.ResetTime = now + (rl.Limit-rl.Remaining)*int64(rate)
+		c.UpdateExpiration(r.HashKey(), now+duration)
 		return rl, nil
 	}
 
@@ -327,14 +336,14 @@ func leakyBucket(s Store, c Cache, r *RateLimitReq) (resp *RateLimitResp, err er
 		Status:    Status_UNDER_LIMIT,
 		Limit:     b.Limit,
 		Remaining: r.Burst - r.Hits,
-		ResetTime: now + (b.Limit - (r.Burst - r.Hits)) * int64(rate),
+		ResetTime: now + (b.Limit-(r.Burst-r.Hits))*int64(rate),
 	}
 
 	// Client could be requesting that we start with the bucket OVER_LIMIT
 	if r.Hits > r.Burst {
 		rl.Status = Status_OVER_LIMIT
 		rl.Remaining = 0
-		rl.ResetTime = now + (rl.Limit - rl.Remaining) * int64(rate)
+		rl.ResetTime = now + (rl.Limit-rl.Remaining)*int64(rate)
 		b.Remaining = 0
 	}
 

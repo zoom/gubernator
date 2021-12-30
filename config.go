@@ -50,9 +50,9 @@ type BehaviorConfig struct {
 
 	// How long a non-owning peer should wait before syncing hits to the owning peer
 	GlobalSyncWait time.Duration
-	// How long we should wait for global sync responses from peers
+	// How long we should wait for broadcast sync responses from peers
 	GlobalTimeout time.Duration
-	// The max number of global updates we can batch into a single peer request
+	// The max number of broadcast updates we can batch into a single peer request
 	GlobalBatchLimit int
 
 	// How long the current region will collect request before pushing them to other regions

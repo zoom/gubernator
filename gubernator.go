@@ -395,9 +395,9 @@ func (s *V1Instance) HealthCheck(ctx context.Context, r *HealthCheckReq) (*Healt
 		}
 	}
 
-	// Do the same for region peers
-	regionPeers := s.conf.RegionPicker.Peers()
-	for _, peer := range regionPeers {
+	// Do the same for cluster peers
+	clusterPeers := s.conf.ClusterPicker.Peers()
+	for _, peer := range clusterPeers {
 		lastErr := peer.GetLastErr()
 
 		if lastErr != nil {
@@ -408,7 +408,7 @@ func (s *V1Instance) HealthCheck(ctx context.Context, r *HealthCheckReq) (*Healt
 	}
 
 	health := HealthCheckResp{
-		PeerCount: int32(len(localPeers) + len(regionPeers)),
+		PeerCount: int32(len(localPeers) + len(clusterPeers)),
 		Status:    Healthy,
 	}
 
@@ -445,12 +445,12 @@ func (s *V1Instance) getRateLimit(r *RateLimitReq) (*RateLimitResp, error) {
 // SetPeers is called by the implementor to indicate the pool of peers has changed
 func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 	localPicker := s.conf.LocalPicker.New()
-	regionPicker := s.conf.RegionPicker.New()
+	clusterPicker := s.conf.ClusterPicker.New()
 
 	for _, info := range peerInfo {
-		// Add peers that are not in our local DC to the RegionPicker
+		// Add peers that are not in our local DC to the ClusterPicker
 		if info.ClusterName != s.conf.ClusterName {
-			peer := s.conf.RegionPicker.GetByPeerInfo(info)
+			peer := s.conf.ClusterPicker.GetByPeerInfo(info)
 			// If we don't have an existing PeerClient create a new one
 			if peer == nil {
 				peer = NewPeerClient(PeerConfig{
@@ -459,7 +459,7 @@ func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 					Info:     info,
 				})
 			}
-			regionPicker.Add(peer)
+			clusterPicker.Add(peer)
 			continue
 		}
 		// If we don't have an existing PeerClient create a new one
@@ -477,9 +477,9 @@ func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 	s.peerMutex.Lock()
 	// Replace our current pickers
 	oldLocalPicker := s.conf.LocalPicker
-	oldRegionPicker := s.conf.RegionPicker
+	oldClusterPicker := s.conf.ClusterPicker
 	s.conf.LocalPicker = localPicker
-	s.conf.RegionPicker = regionPicker
+	s.conf.ClusterPicker = clusterPicker
 	s.peerMutex.Unlock()
 
 	s.log.WithField("peers", peerInfo).Debug("peers updated")
@@ -495,9 +495,9 @@ func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 		}
 	}
 
-	for _, regionPicker := range oldRegionPicker.Pickers() {
-		for _, peer := range regionPicker.Peers() {
-			if peerInfo := s.conf.RegionPicker.GetByPeerInfo(peer.Info()); peerInfo == nil {
+	for _, clusterPicker := range oldClusterPicker.Pickers() {
+		for _, peer := range clusterPicker.Peers() {
+			if peerInfo := s.conf.ClusterPicker.GetByPeerInfo(peer.Info()); peerInfo == nil {
 				shutdownPeers = append(shutdownPeers, peer)
 			}
 		}
@@ -543,10 +543,10 @@ func (s *V1Instance) GetPeerList() []*PeerClient {
 	return s.conf.LocalPicker.Peers()
 }
 
-func (s *V1Instance) GetRegionPickers() map[string]PeerPicker {
+func (s *V1Instance) GetClusterPickers() map[string]PeerPicker {
 	s.peerMutex.RLock()
 	defer s.peerMutex.RUnlock()
-	return s.conf.RegionPicker.Pickers()
+	return s.conf.ClusterPicker.Pickers()
 }
 
 // Describe fetches prometheus metrics to be registered

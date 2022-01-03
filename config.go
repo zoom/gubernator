@@ -55,11 +55,11 @@ type BehaviorConfig struct {
 	// The max number of broadcast updates we can batch into a single peer request
 	GlobalBatchLimit int
 
-	// How long the current region will collect request before pushing them to other regions
+	// How long the current cluster will collect request before pushing them to other clusters
 	MultiClusterSyncWait time.Duration
-	// How long the current region will wait for responses from other regions
+	// How long the current cluster will wait for responses from other clusters
 	MultiClusterTimeout time.Duration
-	// The max number of requests the current region will collect
+	// The max number of requests the current cluster will collect before sending the batch
 	MultiClusterBatchLimit int
 }
 
@@ -90,7 +90,7 @@ type Config struct {
 
 	// (Optional) This is the peer picker algorithm the server will use when deciding which remote peer to forward
 	// rate limits too when a `Config.ClusterName` is set to something other than empty string.
-	RegionPicker RegionPeerPicker
+	ClusterPicker ClusterPeerPicker
 
 	// (Optional) This is the name of our local cluster. Typically, a single cluster is defined per datacenter,
 	// but it is possible depending on your need, to have multiple clusters per datacenter or availability zone.
@@ -122,7 +122,7 @@ func (c *Config) SetDefaults() error {
 	setter.SetDefault(&c.Behaviors.MultiClusterSyncWait, time.Second)
 
 	setter.SetDefault(&c.LocalPicker, NewReplicatedConsistentHash(nil, defaultReplicas))
-	setter.SetDefault(&c.RegionPicker, NewRegionPicker(nil))
+	setter.SetDefault(&c.ClusterPicker, NewClusterPicker(nil))
 	setter.SetDefault(&c.Cache, NewLRUCache(0))
 
 	if c.Behaviors.BatchLimit > maxBatchSize {

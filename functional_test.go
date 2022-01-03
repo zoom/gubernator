@@ -982,7 +982,7 @@ func TestLeakyBucketDivBug(t *testing.T) {
 
 func TestMultiCluster(t *testing.T) {
 
-	// TODO: Queue a rate limit with multi region behavior on the NameEmpty cluster
+	// TODO: Queue a rate limit with multi cluster behavior on the NameEmpty cluster
 	// TODO: Check the immediate response is correct
 	// TODO: Wait until the rate limit count shows up on the NameOne and NameTwo cluster
 

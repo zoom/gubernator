@@ -48,7 +48,7 @@ func (mm *remoteClusterManager) runAsyncReqs() {
 
 			// Send the hits if we reached our batch limit
 			if len(hits) == mm.conf.MultiClusterBatchLimit {
-				for dc, picker := range mm.instance.GetRegionPickers() {
+				for dc, picker := range mm.instance.GetClusterPickers() {
 					mm.log.Debugf("Sending %v hit(s) to %s picker", len(hits), dc)
 					mm.sendHits(hits, picker)
 				}
@@ -62,7 +62,7 @@ func (mm *remoteClusterManager) runAsyncReqs() {
 
 		case <-interval.C:
 			if len(hits) > 0 {
-				for dc, picker := range mm.instance.GetRegionPickers() {
+				for dc, picker := range mm.instance.GetClusterPickers() {
 					mm.log.Debugf("Sending %v hit(s) to %s picker", len(hits), dc)
 					mm.sendHits(hits, picker)
 				}
@@ -76,10 +76,21 @@ func (mm *remoteClusterManager) runAsyncReqs() {
 	})
 }
 
-// TODO: Sending cross DC should mainly update the hits, the config should not be sent, or ignored when received
-// TODO: Calculation of OVERLIMIT should not occur when sending hits cross DC
+// TODO: Setup the cluster pickers based on the cluster config set by the admin.
+// TODO: Need to consider how SetPeer() behaves... as it currently over writes
+//  all current peer information, so once the local cluster changes we will loose
+//  the static config provided by the admin.
+
 func (mm *remoteClusterManager) sendHits(r map[string]*RateLimitReq, picker PeerPicker) {
-	// Does nothing for now
+	// TODO: Set ALWAYS_COUNT_HITS behavior so our hits are not ignored by the remote peer if the RL is
+	//  over the limit.
+
+	// TODO: If the picker has more than one entry we might assume that we are NOT sending rate limits to a DNS and thus
+	//  the remote instance will NOT need to look up the owning instances as the local instance of the picker
+	//  should pick the correct remote instance. In this case we set HASH_COMPUTED behavior on the rate limits we
+	//  send over. (Might consider adding an special flag in the cluster that indicates this is the case)
+
+	// TODO: Send the hit to the remote peer
 }
 
 func (mm *remoteClusterManager) Close() {

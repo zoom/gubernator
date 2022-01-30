@@ -20,9 +20,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/mailgun/gubernator/v2/tracing"
+	"github.com/mailgun/gubernator/v2/ctxutil"
 	"github.com/mailgun/holster/v4/clock"
 	"github.com/mailgun/holster/v4/syncutil"
+	"github.com/mailgun/holster/v4/tracing"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/proto"
@@ -80,42 +81,48 @@ func (gm *globalManager) runAsyncHits() {
 	hits := make(map[string]*RateLimitReq)
 
 	gm.wg.Until(func(done chan struct{}) bool {
-		span, ctx := tracing.StartSpan(context.Background())
-		defer span.Finish()
+		retval := false
+		tracing.Scope(context.Background(), func(ctx context.Context) error {
+			select {
+			case r := <-gm.asyncQueue:
+				// Aggregate the hits into a single request
+				key := r.HashKey()
+				_, ok := hits[key]
+				if ok {
+					hits[key].Hits += r.Hits
+				} else {
+					hits[key] = r
+				}
 
-		select {
-		case r := <-gm.asyncQueue:
-			// Aggregate the hits into a single request
-			key := r.HashKey()
-			_, ok := hits[key]
-			if ok {
-				hits[key].Hits += r.Hits
-			} else {
-				hits[key] = r
+				// Send the hits if we reached our batch limit
+				if len(hits) == gm.conf.GlobalBatchLimit {
+					gm.sendHits(ctx, hits)
+					hits = make(map[string]*RateLimitReq)
+					retval = true
+					return nil
+				}
+
+				// If this is our first queued hit since last send
+				// queue the next interval
+				if len(hits) == 1 {
+					interval.Next()
+				}
+
+			case <-interval.C:
+				if len(hits) != 0 {
+					gm.sendHits(ctx, hits)
+					hits = make(map[string]*RateLimitReq)
+				}
+
+			case <-done:
+				return nil
 			}
 
-			// Send the hits if we reached our batch limit
-			if len(hits) == gm.conf.GlobalBatchLimit {
-				gm.sendHits(ctx, hits)
-				hits = make(map[string]*RateLimitReq)
-				return true
-			}
+			retval = true
+			return nil
+		})
 
-			// If this is our first queued hit since last send
-			// queue the next interval
-			if len(hits) == 1 {
-				interval.Next()
-			}
-
-		case <-interval.C:
-			if len(hits) != 0 {
-				gm.sendHits(ctx, hits)
-				hits = make(map[string]*RateLimitReq)
-			}
-		case <-done:
-			return false
-		}
-		return true
+		return retval
 	})
 }
 
@@ -150,7 +157,7 @@ func (gm *globalManager) sendHits(ctx context.Context, hits map[string]*RateLimi
 
 	// Send the rate limit requests to their respective owning peers.
 	for _, p := range peerRequests {
-		ctx, cancel := tracing.ContextWithTimeout(context.Background(), gm.conf.GlobalTimeout)
+		ctx, cancel := ctxutil.WithTimeout(context.Background(), gm.conf.GlobalTimeout)
 		_, err := p.client.GetPeerRateLimits(ctx, &p.req)
 		cancel()
 
@@ -169,35 +176,41 @@ func (gm *globalManager) runBroadcasts() {
 	updates := make(map[string]*RateLimitReq)
 
 	gm.wg.Until(func(done chan struct{}) bool {
-		span, ctx := tracing.StartSpan(context.Background())
-		defer span.Finish()
+		retval := false
+		tracing.Scope(context.Background(), func(ctx context.Context) error {
+			select {
+			case r := <-gm.broadcastQueue:
+				updates[r.HashKey()] = r
 
-		select {
-		case r := <-gm.broadcastQueue:
-			updates[r.HashKey()] = r
+				// Send the hits if we reached our batch limit
+				if len(updates) == gm.conf.GlobalBatchLimit {
+					gm.broadcastPeers(ctx, updates)
+					updates = make(map[string]*RateLimitReq)
+					retval = true
+					return nil
+				}
 
-			// Send the hits if we reached our batch limit
-			if len(updates) == gm.conf.GlobalBatchLimit {
-				gm.broadcastPeers(ctx, updates)
-				updates = make(map[string]*RateLimitReq)
-				return true
+				// If this is our first queued hit since last send
+				// queue the next interval
+				if len(updates) == 1 {
+					interval.Next()
+				}
+
+			case <-interval.C:
+				if len(updates) != 0 {
+					gm.broadcastPeers(ctx, updates)
+					updates = make(map[string]*RateLimitReq)
+				}
+
+			case <-done:
+				return nil
 			}
 
-			// If this is our first queued hit since last send
-			// queue the next interval
-			if len(updates) == 1 {
-				interval.Next()
-			}
+			retval = true
+			return nil
+		})
 
-		case <-interval.C:
-			if len(updates) != 0 {
-				gm.broadcastPeers(ctx, updates)
-				updates = make(map[string]*RateLimitReq)
-			}
-		case <-done:
-			return false
-		}
-		return true
+		return retval
 	})
 }
 
@@ -233,7 +246,7 @@ func (gm *globalManager) broadcastPeers(ctx context.Context, updates map[string]
 			continue
 		}
 
-		ctx, cancel := tracing.ContextWithTimeout(context.Background(), gm.conf.GlobalTimeout)
+		ctx, cancel := ctxutil.WithTimeout(context.Background(), gm.conf.GlobalTimeout)
 		_, err := peer.UpdatePeerGlobals(ctx, &req)
 		cancel()
 

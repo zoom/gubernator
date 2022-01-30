@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/mailgun/gubernator/v2/tracing"
+	"github.com/mailgun/gubernator/v2/ctxutil"
 	"github.com/mailgun/holster/v4/clock"
 	"github.com/mailgun/holster/v4/setter"
 	"github.com/mailgun/holster/v4/syncutil"
@@ -139,7 +139,7 @@ func (e *EtcdPool) watchPeers() error {
 }
 
 func (e *EtcdPool) collectPeers(revision *int64) error {
-	ctx, cancel := tracing.ContextWithTimeout(e.ctx, etcdTimeout)
+	ctx, cancel := ctxutil.WithTimeout(e.ctx, etcdTimeout)
 	defer cancel()
 
 	resp, err := e.conf.Client.Get(ctx, e.conf.KeyPrefix, etcd.WithPrefix())
@@ -232,7 +232,7 @@ func (e *EtcdPool) register(peer PeerInfo) error {
 	var lease *etcd.LeaseGrantResponse
 
 	register := func() error {
-		ctx, cancel := tracing.ContextWithTimeout(e.ctx, etcdTimeout)
+		ctx, cancel := ctxutil.WithTimeout(e.ctx, etcdTimeout)
 		defer cancel()
 		var err error
 
@@ -296,7 +296,7 @@ func (e *EtcdPool) register(peer PeerInfo) error {
 			}
 			lastKeepAlive = clock.Now()
 		case <-done:
-			ctx, cancel := tracing.ContextWithTimeout(context.Background(), etcdTimeout)
+			ctx, cancel := ctxutil.WithTimeout(context.Background(), etcdTimeout)
 			if _, err := e.conf.Client.Delete(ctx, instanceKey); err != nil {
 				e.log.WithError(err).
 					Warn("during etcd delete")

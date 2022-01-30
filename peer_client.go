@@ -22,15 +22,16 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mailgun/gubernator/v2/tracing"
+	"github.com/mailgun/gubernator/v2/ctxutil"
 	"github.com/mailgun/holster/v4/clock"
 	"github.com/mailgun/holster/v4/collections"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
+	"github.com/mailgun/holster/v4/tracing"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -92,72 +93,68 @@ func NewPeerClient(conf PeerConfig) *PeerClient {
 
 // Connect establishes a GRPC connection to a peer
 func (c *PeerClient) connect(ctx context.Context) error {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
+	return tracing.Scope(ctx, func(ctx context.Context) error {
+		// NOTE: To future self, this mutex is used here because we need to know if the peer is disconnecting and
+		// handle ErrClosing. Since this mutex MUST be here we take this opportunity to also see if we are connected.
+		// Doing this here encapsulates managing the connected state to the PeerClient struct. Previously a PeerClient
+		// was connected when `NewPeerClient()` was called however, when adding support for multi data centers having a
+		// PeerClient connected to every Peer in every data center continuously is not desirable.
 
-	// NOTE: To future self, this mutex is used here because we need to know if the peer is disconnecting and
-	// handle ErrClosing. Since this mutex MUST be here we take this opportunity to also see if we are connected.
-	// Doing this here encapsulates managing the connected state to the PeerClient struct. Previously a PeerClient
-	// was connected when `NewPeerClient()` was called however, when adding support for multi data centers having a
-	// PeerClient connected to every Peer in every data center continuously is not desirable.
+		funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.connect"))
+		defer funcTimer.ObserveDuration()
+		lockTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.connect_RLock"))
 
-	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.connect"))
-	defer funcTimer.ObserveDuration()
-	lockTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.connect_RLock"))
+		c.mutex.RLock()
+		lockTimer.ObserveDuration()
+		span := trace.SpanFromContext(ctx)
+		span.AddEvent("mutex.RLock()")
 
-	c.mutex.RLock()
-	lockTimer.ObserveDuration()
-	tracing.LogInfo(span, "mutex.RLock()")
+		if c.status == peerClosing {
+			c.mutex.RUnlock()
+			return &PeerErr{err: errors.New("already disconnecting")}
+		}
 
-	if c.status == peerClosing {
-		c.mutex.RUnlock()
-		return &PeerErr{err: errors.New("already disconnecting")}
-	}
+		if c.status == peerNotConnected {
+			// This mutex stuff looks wonky, but it allows us to use RLock() 99% of the time, while the 1% where we
+			// actually need to connect uses a full Lock(), using RLock() most of which should reduce the over head
+			// of a full lock on every call
 
-	if c.status == peerNotConnected {
-		// This mutex stuff looks wonky, but it allows us to use RLock() 99% of the time, while the 1% where we
-		// actually need to connect uses a full Lock(), using RLock() most of which should reduce the over head
-		// of a full lock on every call
+			// Yield the read lock so we can get the RW lock
+			c.mutex.RUnlock()
+			c.mutex.Lock()
+			defer c.mutex.Unlock()
+			span.AddEvent("mutex.Lock()")
 
-		// Yield the read lock so we can get the RW lock
-		c.mutex.RUnlock()
-		c.mutex.Lock()
-		defer c.mutex.Unlock()
-		tracing.LogInfo(span, "mutex.Lock()")
+			// Now that we have the RW lock, ensure no else got here ahead of us.
+			if c.status == peerConnected {
+				return nil
+			}
 
-		// Now that we have the RW lock, ensure no else got here ahead of us.
-		if c.status == peerConnected {
+			// Setup OpenTelemetry interceptor to propagate spans.
+			var err error
+			opts := []grpc.DialOption{
+				grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
+				grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor()),
+			}
+
+			if c.conf.TLS != nil {
+				opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(c.conf.TLS)))
+			} else {
+				opts = append(opts, grpc.WithInsecure())
+			}
+
+			c.conn, err = grpc.Dial(c.conf.Info.GRPCAddress, opts...)
+			if err != nil {
+				return c.setLastErr(&PeerErr{err: errors.Wrapf(err, "failed to dial peer %s", c.conf.Info.GRPCAddress)})
+			}
+			c.client = NewPeersV1Client(c.conn)
+			c.status = peerConnected
+			go c.run()
 			return nil
 		}
-
-		// Setup Opentracing interceptor to propagate spans.
-		tracer := opentracing.GlobalTracer()
-		tracingUnaryInterceptor := otgrpc.OpenTracingClientInterceptor(tracer)
-		tracingStreamInterceptor := otgrpc.OpenTracingStreamClientInterceptor(tracer)
-
-		var err error
-		opts := []grpc.DialOption{
-			grpc.WithUnaryInterceptor(tracingUnaryInterceptor),
-			grpc.WithStreamInterceptor(tracingStreamInterceptor),
-		}
-
-		if c.conf.TLS != nil {
-			opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(c.conf.TLS)))
-		} else {
-			opts = append(opts, grpc.WithInsecure())
-		}
-
-		c.conn, err = grpc.Dial(c.conf.Info.GRPCAddress, opts...)
-		if err != nil {
-			return c.setLastErr(&PeerErr{err: errors.Wrapf(err, "failed to dial peer %s", c.conf.Info.GRPCAddress)})
-		}
-		c.client = NewPeersV1Client(c.conn)
-		c.status = peerConnected
-		go c.run()
+		c.mutex.RUnlock()
 		return nil
-	}
-	c.mutex.RUnlock()
-	return nil
+	})
 }
 
 // Info returns PeerInfo struct that describes this PeerClient
@@ -168,101 +165,123 @@ func (c *PeerClient) Info() PeerInfo {
 // GetPeerRateLimit forwards a rate limit request to a peer. If the rate limit has `behavior == BATCHING` configured
 // this method will attempt to batch the rate limits
 func (c *PeerClient) GetPeerRateLimit(ctx context.Context, r *RateLimitReq) (*RateLimitResp, error) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
-	span.SetTag("request.name", r.Name)
-	span.SetTag("request.key", r.UniqueKey)
-	span.SetTag("request.limit", r.Limit)
-	span.SetTag("request.duration", r.Duration)
+	var resp *RateLimitResp
 
-	// If config asked for no batching
-	if HasBehavior(r.Behavior, Behavior_NO_BATCHING) {
-		// Send a single low latency rate limit request
-		resp, err := c.GetPeerRateLimits(ctx, &GetPeerRateLimitsReq{
-			Requests: []*RateLimitReq{r},
-		})
-		if err != nil {
-			err2 := errors.Wrap(err, "Error in GetPeerRateLimits")
-			ext.LogError(span, err2)
-			return nil, c.setLastErr(err2)
+	err := tracing.Scope(ctx, func(ctx context.Context) error {
+		var err error
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("request.name", r.Name),
+			attribute.String("request.key", r.UniqueKey),
+			attribute.Int64("request.limit", r.Limit),
+			attribute.Int64("request.duration", r.Duration),
+		)
+
+		// If config asked for no batching
+		if HasBehavior(r.Behavior, Behavior_NO_BATCHING) {
+			// Send a single low latency rate limit request
+			gprlResp, err := c.GetPeerRateLimits(ctx, &GetPeerRateLimitsReq{
+				Requests: []*RateLimitReq{r},
+			})
+			if err != nil {
+				err = errors.Wrap(err, "Error in GetPeerRateLimits")
+				return c.setLastErr(err)
+			}
+			resp = gprlResp.RateLimits[0]
+			return nil
 		}
-		return resp.RateLimits[0], nil
-	}
 
-	rateLimitResp, err := c.getPeerRateLimitsBatch(ctx, r)
-	if err != nil {
-		err2 := errors.Wrap(err, "Error in getPeerRateLimitsBatch")
-		ext.LogError(span, err2)
-		return nil, c.setLastErr(err2)
-	}
+		resp, err = c.getPeerRateLimitsBatch(ctx, r)
+		if err != nil {
+			err = errors.Wrap(err, "Error in getPeerRateLimitsBatch")
+			return c.setLastErr(err)
+		}
 
-	return rateLimitResp, nil
+		return nil
+	})
+
+	return resp, err
 }
 
 // GetPeerRateLimits requests a list of rate limit statuses from a peer
 func (c *PeerClient) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimitsReq) (*GetPeerRateLimitsResp, error) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
-	span.SetTag("numRequests", len(r.Requests))
+	var resp *GetPeerRateLimitsResp
 
-	if err := c.connect(ctx); err != nil {
-		err2 := errors.Wrap(err, "Error in connect")
-		ext.LogError(span, err2)
-		checkErrorCounter.WithLabelValues("Connect error").Add(1)
-		return nil, c.setLastErr(err2)
-	}
+	err := tracing.Scope(ctx, func(ctx context.Context) error {
+		var err error
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.Int("numRequests", len(r.Requests)),
+		)
 
-	// NOTE: This must be done within the RLock since calling Wait() in Shutdown() causes
-	// a race condition if called within a separate go routine if the internal wg is `0`
-	// when Wait() is called then Add(1) is called concurrently.
-	c.mutex.RLock()
-	tracing.LogInfo(span, "mutex.RLock()")
-	c.wg.Add(1)
-	defer func() {
-		c.mutex.RUnlock()
-		defer c.wg.Done()
-	}()
+		if err = c.connect(ctx); err != nil {
+			checkErrorCounter.WithLabelValues("Connect error").Add(1)
+			err = errors.Wrap(err, "Error in connect")
+			return c.setLastErr(err)
+		}
 
-	resp, err := c.client.GetPeerRateLimits(ctx, r)
-	if err != nil {
-		err2 := errors.Wrap(err, "Error in client.GetPeerRateLimits")
-		ext.LogError(span, err2)
-		// checkErrorCounter is updated within client.GetPeerRateLimits().
-		return nil, c.setLastErr(err2)
-	}
+		// NOTE: This must be done within the RLock since calling Wait() in Shutdown() causes
+		// a race condition if called within a separate go routine if the internal wg is `0`
+		// when Wait() is called then Add(1) is called concurrently.
+		c.mutex.RLock()
+		span.AddEvent("mutex.RLock()")
+		c.wg.Add(1)
+		defer func() {
+			c.mutex.RUnlock()
+			defer c.wg.Done()
+		}()
 
-	// Unlikely, but this avoids a panic if something wonky happens
-	if len(resp.RateLimits) != len(r.Requests) {
-		err = errors.New("number of rate limits in peer response does not match request")
-		ext.LogError(span, err)
-		checkErrorCounter.WithLabelValues("Item mismatch").Add(1)
-		return nil, c.setLastErr(err)
-	}
-	return resp, nil
+		resp, err = c.client.GetPeerRateLimits(ctx, r)
+		if err != nil {
+			// checkErrorCounter is updated within client.GetPeerRateLimits().
+			err = errors.Wrap(err, "Error in client.GetPeerRateLimits")
+			return c.setLastErr(err)
+		}
+
+		// Unlikely, but this avoids a panic if something wonky happens
+		if len(resp.RateLimits) != len(r.Requests) {
+			checkErrorCounter.WithLabelValues("Item mismatch").Add(1)
+			err = errors.New("number of rate limits in peer response does not match request")
+			return c.setLastErr(err)
+		}
+
+		return nil
+	})
+
+	return resp, err
 }
 
 // UpdatePeerGlobals sends global rate limit status updates to a peer
 func (c *PeerClient) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (*UpdatePeerGlobalsResp, error) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
+	var resp *UpdatePeerGlobalsResp
 
-	if err := c.connect(ctx); err != nil {
-		return nil, c.setLastErr(err)
-	}
+	err := tracing.Scope(ctx, func(ctx context.Context) error {
+		var err error
+		span := trace.SpanFromContext(ctx)
 
-	// See NOTE above about RLock and wg.Add(1)
-	c.mutex.RLock()
-	tracing.LogInfo(span, "mutex.RLock()")
-	c.wg.Add(1)
-	defer func() {
-		c.mutex.RUnlock()
-		defer c.wg.Done()
-	}()
+		err = c.connect(ctx)
+		if err != nil {
+			err = errors.Wrap(err, "error in c.connect")
+			return c.setLastErr(err)
+		}
 
-	resp, err := c.client.UpdatePeerGlobals(ctx, r)
-	if err != nil {
-		c.setLastErr(err)
-	}
+		// See NOTE above about RLock and wg.Add(1)
+		c.mutex.RLock()
+		span.AddEvent("mutex.RLock()")
+		c.wg.Add(1)
+		defer func() {
+			c.mutex.RUnlock()
+			defer c.wg.Done()
+		}()
+
+		resp, err = c.client.UpdatePeerGlobals(ctx, r)
+		if err != nil {
+			err = errors.Wrap(err, "error in c.client.UpdatePeerGlobals")
+			return c.setLastErr(err)
+		}
+
+		return nil
+	})
 
 	return resp, err
 }
@@ -299,72 +318,77 @@ func (c *PeerClient) GetLastErr() []string {
 }
 
 func (c *PeerClient) getPeerRateLimitsBatch(ctx context.Context, r *RateLimitReq) (*RateLimitResp, error) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
-	span.SetTag("request.name", r.Name)
-	span.SetTag("request.key", r.UniqueKey)
-	span.SetTag("request.limit", r.Limit)
-	span.SetTag("request.duration", r.Duration)
+	var resp *RateLimitResp
 
-	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.getPeerRateLimitsBatch"))
-	defer funcTimer.ObserveDuration()
+	err := tracing.Scope(ctx, func(ctx context.Context) error {
+		var err error
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.String("request.name", r.Name),
+			attribute.String("request.key", r.UniqueKey),
+			attribute.Int64("request.limit", r.Limit),
+			attribute.Int64("request.duration", r.Duration),
+		)
 
-	if err := c.connect(ctx); err != nil {
-		err2 := errors.Wrap(err, "Error in connect")
-		ext.LogError(span, err2)
-		return nil, c.setLastErr(err2)
-	}
+		funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.getPeerRateLimitsBatch"))
+		defer funcTimer.ObserveDuration()
 
-	// See NOTE above about RLock and wg.Add(1)
-	c.mutex.RLock()
-	tracing.LogInfo(span, "mutex.RLock()")
-	if c.status == peerClosing {
-		err2 := &PeerErr{err: errors.New("already disconnecting")}
-		ext.LogError(span, err2)
-		return nil, c.setLastErr(err2)
-	}
-	req := request{
-		request: r,
-		resp:    make(chan *response, 1),
-		ctx:     ctx,
-	}
-
-	// Enqueue the request to be sent
-	tracing.LogInfo(span, "Enqueue request", "queueLength", len(c.queue))
-	peerAddr := c.Info().GRPCAddress
-	queueLengthMetric.WithLabelValues(peerAddr).Observe(float64(len(c.queue)))
-
-	select {
-	case c.queue <- &req:
-		// Successfully enqueued request.
-	case <-ctx.Done():
-		err := errors.Wrap(ctx.Err(), "Error while enqueuing request")
-		ext.LogError(span, err)
-		return nil, err
-	}
-
-	c.wg.Add(1)
-	defer func() {
-		c.mutex.RUnlock()
-		c.wg.Done()
-	}()
-
-	// Wait for a response or context cancel
-	span3, ctx2 := tracing.StartNamedSpan(ctx, "Wait for response")
-	defer span3.Finish()
-
-	select {
-	case resp := <-req.resp:
-		if resp.err != nil {
-			err2 := errors.Wrap(c.setLastErr(resp.err), "Request error")
-			ext.LogError(span, err2)
-			return nil, c.setLastErr(err2)
+		if err := c.connect(ctx); err != nil {
+			err = errors.Wrap(err, "Error in connect")
+			return c.setLastErr(err)
 		}
-		return resp.rl, nil
-	case <-ctx2.Done():
-		ext.LogError(span, ctx2.Err())
-		return nil, ctx2.Err()
-	}
+
+		// See NOTE above about RLock and wg.Add(1)
+		c.mutex.RLock()
+		span.AddEvent("mutex.RLock()")
+		if c.status == peerClosing {
+			peerErr := &PeerErr{err: errors.New("already disconnecting")}
+			return c.setLastErr(peerErr)
+		}
+		req := request{
+			request: r,
+			resp:    make(chan *response, 1),
+			ctx:     ctx,
+		}
+
+		// Enqueue the request to be sent
+		span.AddEvent("Enqueue request", trace.WithAttributes(
+			attribute.Int("queueLength", len(c.queue))),
+		)
+		peerAddr := c.Info().GRPCAddress
+		queueLengthMetric.WithLabelValues(peerAddr).Observe(float64(len(c.queue)))
+
+		select {
+		case c.queue <- &req:
+			// Successfully enqueued request.
+		case <-ctx.Done():
+			err = errors.Wrap(ctx.Err(), "Error while enqueuing request")
+			return err
+		}
+
+		c.wg.Add(1)
+		defer func() {
+			c.mutex.RUnlock()
+			c.wg.Done()
+		}()
+
+		// Wait for a response or context cancel
+		return tracing.NamedScope(ctx, "Wait for response", func(ctx context.Context) error {
+			select {
+			case chanResp := <-req.resp:
+				if chanResp.err != nil {
+					err = errors.Wrap(chanResp.err, "Request error")
+					return c.setLastErr(err)
+				}
+				resp = chanResp.rl
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	})
+
+	return resp, err
 }
 
 // run waits for requests to be queued, when either c.batchWait time
@@ -388,12 +412,8 @@ func (c *PeerClient) run() {
 				return
 			}
 
-			// Wrap logic in anon function so we can use defer.
-			func() {
-				// Use context of the request for opentracing span.
-				reqSpan, reqCtx := tracing.StartSpan(r.ctx)
-				defer reqSpan.Finish()
-
+			_ = tracing.Scope(r.ctx, func(reqCtx context.Context) error {
+				reqSpan := trace.SpanFromContext(reqCtx)
 				queue = append(queue, r)
 
 				// Send the queue if we reached our batch limit
@@ -403,11 +423,11 @@ func (c *PeerClient) run() {
 						"queueLen":   len(queue),
 						"batchLimit": c.conf.Behavior.BatchLimit,
 					}).Info(logMsg)
-					tracing.LogInfo(reqSpan, logMsg)
+					reqSpan.AddEvent(logMsg)
 
 					c.sendQueue(reqCtx, queue)
 					queue = nil
-					return
+					return nil
 				}
 
 				// If this is our first queued item since last send
@@ -415,18 +435,24 @@ func (c *PeerClient) run() {
 				if len(queue) == 1 {
 					interval.Next()
 				}
-			}()
+
+				return nil
+			})
 
 		case <-interval.C:
 			if len(queue) != 0 {
-				intervalSpan, ctx2 := tracing.StartSpan(ctx)
-				intervalSpan.SetTag("queueLen", len(queue))
-				intervalSpan.SetTag("batchWait", c.conf.Behavior.BatchWait.String())
+				_ = tracing.Scope(ctx, func(ctx context.Context) error {
+					intervalSpan := trace.SpanFromContext(ctx)
+					intervalSpan.SetAttributes(
+						attribute.Int("queueLen", len(queue)),
+						attribute.String("batchWait", c.conf.Behavior.BatchWait.String()),
+					)
 
-				c.sendQueue(ctx2, queue)
-				queue = nil
+					c.sendQueue(ctx, queue)
+					queue = nil
 
-				intervalSpan.Finish()
+					return nil
+				})
 			}
 		}
 	}
@@ -435,96 +461,102 @@ func (c *PeerClient) run() {
 // sendQueue sends the queue provided and returns the responses to
 // waiting go routines
 func (c *PeerClient) sendQueue(ctx context.Context, queue []*request) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
-	span.SetTag("queueLen", len(queue))
+	_ = tracing.Scope(ctx, func(ctx context.Context) error {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.Int("queueLen", len(queue)),
+		)
 
-	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.sendQueue"))
-	defer funcTimer.ObserveDuration()
+		funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.sendQueue"))
+		defer funcTimer.ObserveDuration()
 
-	var req GetPeerRateLimitsReq
-	for _, r := range queue {
-		req.Requests = append(req.Requests, r.request)
-	}
-
-	ctx2, cancel2 := tracing.ContextWithTimeout(ctx, c.conf.Behavior.BatchTimeout)
-	resp, err := c.client.GetPeerRateLimits(ctx2, &req)
-	cancel2()
-
-	// An error here indicates the entire request failed
-	if err != nil {
-		logPart := "Error in client.GetPeerRateLimits"
-		err2 := errors.Wrap(err, logPart)
-		logrus.
-			WithError(err).
-			WithFields(logrus.Fields{
-				"queueLen":     len(queue),
-				"batchTimeout": c.conf.Behavior.BatchTimeout.String(),
-			}).
-			Error(logPart)
-		ext.LogError(span, err2)
-		c.setLastErr(err2)
-		// checkErrorCounter is updated within client.GetPeerRateLimits().
-
+		var req GetPeerRateLimitsReq
 		for _, r := range queue {
-			r.resp <- &response{err: err}
+			req.Requests = append(req.Requests, r.request)
 		}
-		return
-	}
 
-	// Unlikely, but this avoids a panic if something wonky happens
-	if len(resp.RateLimits) != len(queue) {
-		err = errors.New("server responded with incorrect rate limit list size")
-		ext.LogError(span, err)
+		ctx2, cancel2 := ctxutil.WithTimeout(ctx, c.conf.Behavior.BatchTimeout)
+		resp, err := c.client.GetPeerRateLimits(ctx2, &req)
+		cancel2()
 
-		for _, r := range queue {
-			checkErrorCounter.WithLabelValues("Item mismatch").Add(1)
-			r.resp <- &response{err: err}
+		// An error here indicates the entire request failed
+		if err != nil {
+			logPart := "Error in client.GetPeerRateLimits"
+			logrus.WithContext(ctx).
+				WithError(err).
+				WithFields(logrus.Fields{
+					"queueLen":     len(queue),
+					"batchTimeout": c.conf.Behavior.BatchTimeout.String(),
+				}).
+				Error(logPart)
+			err = errors.Wrap(err, logPart)
+			// checkErrorCounter is updated within client.GetPeerRateLimits().
+
+			for _, r := range queue {
+				r.resp <- &response{err: err}
+			}
+
+			return c.setLastErr(err)
 		}
-		return
-	}
 
-	// Provide responses to channels waiting in the queue
-	for i, r := range queue {
-		r.resp <- &response{rl: resp.RateLimits[i]}
-	}
+		// Unlikely, but this avoids a panic if something wonky happens
+		if len(resp.RateLimits) != len(queue) {
+			err = errors.New("server responded with incorrect rate limit list size")
+
+			for _, r := range queue {
+				checkErrorCounter.WithLabelValues("Item mismatch").Add(1)
+				r.resp <- &response{err: err}
+			}
+
+			return err
+		}
+
+		// Provide responses to channels waiting in the queue
+		for i, r := range queue {
+			r.resp <- &response{rl: resp.RateLimits[i]}
+		}
+
+		return nil
+	})
 }
 
 // Shutdown will gracefully shutdown the client connection, until the context is cancelled
 func (c *PeerClient) Shutdown(ctx context.Context) error {
-	// Take the write lock since we're going to modify the closing state
-	c.mutex.Lock()
-	if c.status == peerClosing || c.status == peerNotConnected {
-		c.mutex.Unlock()
-		return nil
-	}
-	defer c.mutex.Unlock()
-
-	c.status = peerClosing
-	// We need to close the chan here to prevent a possible race
-	close(c.queue)
-
-	defer func() {
-		if c.conn != nil {
-			c.conn.Close()
+	return tracing.Scope(ctx, func(ctx context.Context) error {
+		// Take the write lock since we're going to modify the closing state
+		c.mutex.Lock()
+		if c.status == peerClosing || c.status == peerNotConnected {
+			c.mutex.Unlock()
+			return nil
 		}
-	}()
+		defer c.mutex.Unlock()
 
-	// This allows us to wait on the waitgroup, or until the context
-	// has been cancelled. This doesn't leak goroutines, because
-	// closing the connection will kill any outstanding requests.
-	waitChan := make(chan struct{})
-	go func() {
-		c.wg.Wait()
-		close(waitChan)
-	}()
+		c.status = peerClosing
+		// We need to close the chan here to prevent a possible race
+		close(c.queue)
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-waitChan:
-		return nil
-	}
+		defer func() {
+			if c.conn != nil {
+				c.conn.Close()
+			}
+		}()
+
+		// This allows us to wait on the waitgroup, or until the context
+		// has been cancelled. This doesn't leak goroutines, because
+		// closing the connection will kill any outstanding requests.
+		waitChan := make(chan struct{})
+		go func() {
+			c.wg.Wait()
+			close(waitChan)
+		}()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-waitChan:
+			return nil
+		}
+	})
 }
 
 // PeerErr is returned if the peer is not connected or is in a closing state

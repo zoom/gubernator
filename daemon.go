@@ -26,17 +26,16 @@ import (
 	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"github.com/mailgun/gubernator/v2/tracing"
 	"github.com/mailgun/holster/v4/etcdutil"
 	"github.com/mailgun/holster/v4/setter"
 	"github.com/mailgun/holster/v4/syncutil"
-	otgrpc "github.com/opentracing-contrib/go-grpc"
-	"github.com/opentracing/opentracing-go"
+	"github.com/mailgun/holster/v4/tracing"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
@@ -65,19 +64,19 @@ type Daemon struct {
 // This function will block until the daemon responds to connections as specified
 // by GRPCListenAddress and HTTPListenAddress
 func SpawnDaemon(ctx context.Context, conf DaemonConfig) (*Daemon, error) {
-	span, ctx := tracing.StartSpan(ctx)
-	defer span.Finish()
+	var s *Daemon
 
-	s := Daemon{
-		log:  conf.Logger,
-		conf: conf,
-	}
-	setter.SetDefault(&s.log, logrus.WithField("category", "gubernator"))
+	err := tracing.Scope(ctx, func(ctx context.Context) error {
+		s = &Daemon{
+			log:  conf.Logger,
+			conf: conf,
+		}
+		setter.SetDefault(&s.log, logrus.WithField("category", "gubernator"))
 
-	if err := s.Start(ctx); err != nil {
-		return nil, err
-	}
-	return &s, nil
+		return s.Start(ctx)
+	})
+
+	return s, err
 }
 
 func (s *Daemon) Start(ctx context.Context) error {
@@ -115,14 +114,10 @@ func (s *Daemon) Start(ctx context.Context) error {
 		return err
 	}
 
-	// Opentracing on gRPC endpoints.
-	tracer := opentracing.GlobalTracer()
-	tracingUnaryInterceptor := otgrpc.OpenTracingServerInterceptor(tracer)
-	tracingStreamInterceptor := otgrpc.OpenTracingStreamServerInterceptor(tracer)
-
+	// OpenTelemetry instrumentation on gRPC endpoints.
 	opts = append(opts,
-		grpc.UnaryInterceptor(tracingUnaryInterceptor),
-		grpc.StreamInterceptor(tracingStreamInterceptor),
+		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
+		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor()),
 	)
 
 	if s.conf.ServerTLS() != nil {
@@ -142,7 +137,7 @@ func (s *Daemon) Start(ctx context.Context) error {
 		CacheFactory: cacheFactory,
 		Behaviors:    s.conf.Behaviors,
 	}
-	s.V1Server, err = NewV1Instance(s.gubeConfig)
+	s.V1Server, err = NewV1Instance(ctx, s.gubeConfig)
 	if err != nil {
 		return errors.Wrap(err, "while creating new gubernator instance")
 	}

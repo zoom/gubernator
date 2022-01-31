@@ -101,6 +101,10 @@ func (s *Daemon) Start(ctx context.Context) error {
 	opts := []grpc.ServerOption{
 		grpc.StatsHandler(s.statsHandler),
 		grpc.MaxRecvMsgSize(1024 * 1024),
+
+		// OpenTelemetry instrumentation on gRPC endpoints.
+		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
+		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor()),
 	}
 
 	if s.conf.GRPCMaxConnectionAgeSeconds > 0 {
@@ -113,12 +117,6 @@ func (s *Daemon) Start(ctx context.Context) error {
 	if err := SetupTLS(s.conf.TLS); err != nil {
 		return err
 	}
-
-	// OpenTelemetry instrumentation on gRPC endpoints.
-	opts = append(opts,
-		grpc.UnaryInterceptor(otelgrpc.UnaryServerInterceptor()),
-		grpc.StreamInterceptor(otelgrpc.StreamServerInterceptor()),
-	)
 
 	if s.conf.ServerTLS() != nil {
 		// Create two GRPC server instances, one for TLS and the other for the API Gateway

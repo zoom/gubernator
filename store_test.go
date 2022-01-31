@@ -38,7 +38,7 @@ type v1Server struct {
 
 func (s *v1Server) Close() error {
 	s.conf.GRPCServers[0].GracefulStop()
-	return s.srv.Close(context.Background())
+	return s.srv.Close()
 }
 
 // Start a single instance of V1Server with the provided config and listening address.
@@ -46,7 +46,7 @@ func newV1Server(t *testing.T, address string, conf gubernator.Config) *v1Server
 	t.Helper()
 	conf.GRPCServers = append(conf.GRPCServers, grpc.NewServer())
 
-	srv, err := gubernator.NewV1Instance(context.Background(), conf)
+	srv, err := gubernator.NewV1Instance(conf)
 	require.NoError(t, err)
 
 	listener, err := net.Listen("tcp", address)

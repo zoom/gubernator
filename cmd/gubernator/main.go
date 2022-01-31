@@ -53,12 +53,11 @@ func main() {
 	klog.InitFlags(nil)
 	flag.Set("logtostderr", "true")
 
-	ctx, tracer, err := tracing.InitTracing(context.Background(),
+	ctx, _, err := tracing.InitTracing(context.Background(),
 		"github.com/mailgun/gubernator/v2/cmd/gubernator")
 	if err != nil {
 		log.WithError(err).Warn("Error in tracing.InitTracing")
 	}
-	tracing.SetDefaultTracer(tracer)
 
 	// Read our config from the environment or optional environment config file
 	conf, err := gubernator.SetupDaemonConfig(logrus.StandardLogger(), configFile)

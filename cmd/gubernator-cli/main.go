@@ -60,12 +60,11 @@ func main() {
 		log.SetLevel(logrus.ErrorLevel)
 	}
 
-	ctx, tracer, err := tracing.InitTracing(context.Background(),
+	ctx, _, err := tracing.InitTracing(context.Background(),
 		"github.com/mailgun/gubernator/v2/cmd/gubernator-cli")
 	if err != nil {
 		log.WithError(err).Warn("Error in tracing.InitTracing")
 	}
-	tracing.SetDefaultTracer(tracer)
 
 	var client guber.V1Client
 	err = tracing.Scope(ctx, func(ctx context.Context) error {
@@ -158,50 +157,49 @@ func randInt(min, max int) int {
 }
 
 func sendRequest(ctx context.Context, client guber.V1Client, req *guber.GetRateLimitsReq) {
-	_ = tracing.Scope(ctx, func(ctx context.Context) error {
-		ctx, cancel := ctxutil.WithTimeout(ctx, clock.Millisecond*500)
+	ctx = tracing.StartScope(ctx)
+	defer tracing.EndScope(ctx, nil)
 
-		// Now hit our cluster with the rate limits
-		resp, err := client.GetRateLimits(ctx, req)
-		cancel()
-		if err != nil {
-			log.WithContext(ctx).WithError(err).Error("Error in client.GetRateLimits")
-			return nil
+	ctx, cancel := ctxutil.WithTimeout(ctx, clock.Millisecond*500)
+
+	// Now hit our cluster with the rate limits
+	resp, err := client.GetRateLimits(ctx, req)
+	cancel()
+	if err != nil {
+		log.WithContext(ctx).WithError(err).Error("Error in client.GetRateLimits")
+		return
+	}
+
+	// Sanity checks.
+	if resp == nil {
+		log.WithContext(ctx).Error("Response object is unexpectedly nil")
+		return
+	}
+	if resp.Responses == nil {
+		log.WithContext(ctx).Error("Responses array is unexpectedly nil")
+		return
+	}
+
+	// Check for overlimit response.
+	overlimit := false
+
+	for itemNum, resp := range resp.Responses {
+		if resp.Status == guber.Status_OVER_LIMIT {
+			overlimit = true
+			log.WithContext(ctx).WithField("name", req.Requests[itemNum].Name).
+				Info("Overlimit!")
 		}
+	}
 
-		// Sanity checks.
-		if resp == nil {
-			log.WithContext(ctx).Error("Response object is unexpectedly nil")
-			return nil
+	if overlimit {
+		span := trace.SpanFromContext(ctx)
+		span.SetAttributes(
+			attribute.Bool("overlimit", true),
+		)
+
+		if !quiet {
+			dumpResp := spew.Sdump(resp)
+			log.WithContext(ctx).Info(dumpResp)
 		}
-		if resp.Responses == nil {
-			log.WithContext(ctx).Error("Responses array is unexpectedly nil")
-			return nil
-		}
-
-		// Check for overlimit response.
-		overlimit := false
-
-		for itemNum, resp := range resp.Responses {
-			if resp.Status == guber.Status_OVER_LIMIT {
-				overlimit = true
-				log.WithContext(ctx).WithField("name", req.Requests[itemNum].Name).
-					Info("Overlimit!")
-			}
-		}
-
-		if overlimit {
-			span := trace.SpanFromContext(ctx)
-			span.SetAttributes(
-				attribute.Bool("overlimit", true),
-			)
-
-			if !quiet {
-				dumpResp := spew.Sdump(resp)
-				log.WithContext(ctx).Info(dumpResp)
-			}
-		}
-
-		return nil
-	})
+	}
 }

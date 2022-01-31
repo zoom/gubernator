@@ -81,48 +81,42 @@ func (gm *globalManager) runAsyncHits() {
 	hits := make(map[string]*RateLimitReq)
 
 	gm.wg.Until(func(done chan struct{}) bool {
-		retval := false
-		tracing.Scope(context.Background(), func(ctx context.Context) error {
-			select {
-			case r := <-gm.asyncQueue:
-				// Aggregate the hits into a single request
-				key := r.HashKey()
-				_, ok := hits[key]
-				if ok {
-					hits[key].Hits += r.Hits
-				} else {
-					hits[key] = r
-				}
+		ctx := tracing.StartScope(context.Background())
+		defer tracing.EndScope(ctx, nil)
 
-				// Send the hits if we reached our batch limit
-				if len(hits) == gm.conf.GlobalBatchLimit {
-					gm.sendHits(ctx, hits)
-					hits = make(map[string]*RateLimitReq)
-					retval = true
-					return nil
-				}
-
-				// If this is our first queued hit since last send
-				// queue the next interval
-				if len(hits) == 1 {
-					interval.Next()
-				}
-
-			case <-interval.C:
-				if len(hits) != 0 {
-					gm.sendHits(ctx, hits)
-					hits = make(map[string]*RateLimitReq)
-				}
-
-			case <-done:
-				return nil
+		select {
+		case r := <-gm.asyncQueue:
+			// Aggregate the hits into a single request
+			key := r.HashKey()
+			_, ok := hits[key]
+			if ok {
+				hits[key].Hits += r.Hits
+			} else {
+				hits[key] = r
 			}
 
-			retval = true
-			return nil
-		})
+			// Send the hits if we reached our batch limit
+			if len(hits) == gm.conf.GlobalBatchLimit {
+				gm.sendHits(ctx, hits)
+				hits = make(map[string]*RateLimitReq)
+				return true
+			}
 
-		return retval
+			// If this is our first queued hit since last send
+			// queue the next interval
+			if len(hits) == 1 {
+				interval.Next()
+			}
+
+		case <-interval.C:
+			if len(hits) != 0 {
+				gm.sendHits(ctx, hits)
+				hits = make(map[string]*RateLimitReq)
+			}
+		case <-done:
+			return false
+		}
+		return true
 	})
 }
 
@@ -176,41 +170,35 @@ func (gm *globalManager) runBroadcasts() {
 	updates := make(map[string]*RateLimitReq)
 
 	gm.wg.Until(func(done chan struct{}) bool {
-		retval := false
-		tracing.Scope(context.Background(), func(ctx context.Context) error {
-			select {
-			case r := <-gm.broadcastQueue:
-				updates[r.HashKey()] = r
+		ctx := tracing.StartScope(context.Background())
+		defer tracing.EndScope(ctx, nil)
 
-				// Send the hits if we reached our batch limit
-				if len(updates) == gm.conf.GlobalBatchLimit {
-					gm.broadcastPeers(ctx, updates)
-					updates = make(map[string]*RateLimitReq)
-					retval = true
-					return nil
-				}
+		select {
+		case r := <-gm.broadcastQueue:
+			updates[r.HashKey()] = r
 
-				// If this is our first queued hit since last send
-				// queue the next interval
-				if len(updates) == 1 {
-					interval.Next()
-				}
-
-			case <-interval.C:
-				if len(updates) != 0 {
-					gm.broadcastPeers(ctx, updates)
-					updates = make(map[string]*RateLimitReq)
-				}
-
-			case <-done:
-				return nil
+			// Send the hits if we reached our batch limit
+			if len(updates) == gm.conf.GlobalBatchLimit {
+				gm.broadcastPeers(ctx, updates)
+				updates = make(map[string]*RateLimitReq)
+				return true
 			}
 
-			retval = true
-			return nil
-		})
+			// If this is our first queued hit since last send
+			// queue the next interval
+			if len(updates) == 1 {
+				interval.Next()
+			}
 
-		return retval
+		case <-interval.C:
+			if len(updates) != 0 {
+				gm.broadcastPeers(ctx, updates)
+				updates = make(map[string]*RateLimitReq)
+			}
+		case <-done:
+			return false
+		}
+		return true
 	})
 }
 

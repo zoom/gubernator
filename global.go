@@ -20,8 +20,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mailgun/gubernator/v2/ctxutil"
 	"github.com/mailgun/holster/v4/clock"
+	"github.com/mailgun/holster/v4/ctxutil"
 	"github.com/mailgun/holster/v4/syncutil"
 	"github.com/mailgun/holster/v4/tracing"
 	"github.com/prometheus/client_golang/prometheus"

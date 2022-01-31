@@ -22,9 +22,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/mailgun/gubernator/v2/ctxutil"
 	"github.com/mailgun/holster/v4/clock"
 	"github.com/mailgun/holster/v4/collections"
+	"github.com/mailgun/holster/v4/ctxutil"
 	"github.com/mailgun/holster/v4/tracing"
 	"github.com/pkg/errors"
 	"github.com/prometheus/client_golang/prometheus"

@@ -249,7 +249,9 @@ func (chp *GubernatorPool) worker(worker *poolWorker) {
 // Send a GetRateLimit request to worker pool.
 func (chp *GubernatorPool) GetRateLimit(ctx context.Context, rlRequest *RateLimitReq) (retval *RateLimitResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	// Delegate request to assigned channel based on request key.
@@ -338,7 +340,9 @@ func (chp *GubernatorPool) handleGetRateLimit(handlerRequest *request, cache Cac
 // Workers are locked during this load operation to prevent race conditions.
 func (chp *GubernatorPool) Load(ctx context.Context) (err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	ch, err := chp.conf.Loader.Load()
 	if err != nil {
@@ -463,7 +467,9 @@ mainloop:
 // Workers are locked during this store operation to prevent race conditions.
 func (chp *GubernatorPool) Store(ctx context.Context) (err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	var wg sync.WaitGroup
 	out := make(chan *CacheItem, 500)
@@ -555,7 +561,9 @@ func (chp *GubernatorPool) handleStore(request poolStoreRequest, cache Cache) {
 // Add to worker's cache.
 func (chp *GubernatorPool) AddCacheItem(ctx context.Context, key string, item *CacheItem) (err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	respChan := make(chan poolAddCacheItemResponse)
 	worker := chp.getWorker(key)
@@ -606,7 +614,9 @@ func (chp *GubernatorPool) handleAddCacheItem(request poolAddCacheItemRequest, c
 // Get item from worker's cache.
 func (chp *GubernatorPool) GetCacheItem(ctx context.Context, key string) (item *CacheItem, found bool, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	respChan := make(chan poolGetCacheItemResponse)
 	worker := chp.getWorker(key)

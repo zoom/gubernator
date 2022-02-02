@@ -111,7 +111,9 @@ func NewV1Instance(conf Config) (v1Instance *V1Instance, err error) {
 	ctx := tracing.StartScope(context.Background())
 	// TODO: How to set sampling priority in OpenTelemetry?
 	// ext.SamplingPriority.Set(span, 1)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	if conf.GRPCServers == nil {
 		return nil, errors.New("at least one GRPCServer instance is required")
@@ -153,7 +155,9 @@ func (s *V1Instance) Close() (err error) {
 	ctx := tracing.StartScope(context.Background())
 	// TODO: How to set sampling priority in OpenTelemetry?
 	// ext.SamplingPriority.Set(span, 1)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	if s.isClosed {
 		return nil
@@ -191,7 +195,9 @@ func (s *V1Instance) Close() (err error) {
 // peer that does.
 func (s *V1Instance) GetRateLimits(ctx context.Context, r *GetRateLimitsReq) (retval *GetRateLimitsResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("V1Instance.GetRateLimits"))
@@ -416,7 +422,9 @@ func (s *V1Instance) asyncRequests(ctx context.Context, req *AsyncReq) {
 // are returned from the local cache and the hits are queued to be sent to the owning peer.
 func (s *V1Instance) getGlobalRateLimit(ctx context.Context, req *RateLimitReq) (retval *RateLimitResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("V1Instance.getGlobalRateLimit"))
 	defer funcTimer.ObserveDuration()
@@ -458,7 +466,9 @@ func (s *V1Instance) getGlobalRateLimit(ctx context.Context, req *RateLimitReq) 
 // be called by a peer who is the owner of a global rate limit.
 func (s *V1Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (retval *UpdatePeerGlobalsResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 
 	for _, g := range r.Globals {
 		item := &CacheItem{
@@ -479,7 +489,9 @@ func (s *V1Instance) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobals
 // GetPeerRateLimits is called by other peers to get the rate limits owned by this peer.
 func (s *V1Instance) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimitsReq) (retval *GetPeerRateLimitsResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attribute.Int("numRequests", len(r.Requests)))
 
@@ -508,7 +520,9 @@ func (s *V1Instance) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimits
 // HealthCheck Returns the health of our instance.
 func (s *V1Instance) HealthCheck(ctx context.Context, r *HealthCheckReq) (retval *HealthCheckResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	var errs []string
@@ -565,7 +579,9 @@ func (s *V1Instance) HealthCheck(ctx context.Context, r *HealthCheckReq) (retval
 
 func (s *V1Instance) getRateLimit(ctx context.Context, r *RateLimitReq) (retval *RateLimitResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(
 		attribute.String("request.name", r.Name),
@@ -683,7 +699,9 @@ func (s *V1Instance) SetPeers(peerInfo []PeerInfo) {
 // GetPeer returns a peer client for the hash key provided
 func (s *V1Instance) GetPeer(ctx context.Context, key string) (client *PeerClient, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("V1Instance.GetPeer"))

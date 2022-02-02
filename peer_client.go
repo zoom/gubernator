@@ -94,7 +94,9 @@ func NewPeerClient(conf PeerConfig) *PeerClient {
 // Connect establishes a GRPC connection to a peer
 func (c *PeerClient) connect(ctx context.Context) (err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	// NOTE: To future self, this mutex is used here because we need to know if the peer is disconnecting and
@@ -166,7 +168,9 @@ func (c *PeerClient) Info() PeerInfo {
 // this method will attempt to batch the rate limits
 func (c *PeerClient) GetPeerRateLimit(ctx context.Context, r *RateLimitReq) (retval *RateLimitResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(
 		attribute.String("request.name", r.Name),
@@ -200,7 +204,9 @@ func (c *PeerClient) GetPeerRateLimit(ctx context.Context, r *RateLimitReq) (ret
 // GetPeerRateLimits requests a list of rate limit statuses from a peer
 func (c *PeerClient) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimitsReq) (retval *GetPeerRateLimitsResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attribute.Int("numRequests", len(r.Requests)))
 
@@ -240,7 +246,9 @@ func (c *PeerClient) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimits
 // UpdatePeerGlobals sends global rate limit status updates to a peer
 func (c *PeerClient) UpdatePeerGlobals(ctx context.Context, r *UpdatePeerGlobalsReq) (retval *UpdatePeerGlobalsResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 
 	if err := c.connect(ctx); err != nil {
@@ -297,7 +305,9 @@ func (c *PeerClient) GetLastErr() []string {
 
 func (c *PeerClient) getPeerRateLimitsBatch(ctx context.Context, r *RateLimitReq) (retval *RateLimitResp, err error) {
 	ctx = tracing.StartScope(ctx)
-	defer tracing.EndScope(ctx, err)
+	defer func() {
+		tracing.EndScope(ctx, err)
+	}()
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(
 		attribute.String("request.name", r.Name),

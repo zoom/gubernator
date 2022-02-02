@@ -233,6 +233,8 @@ github.com/mailgun/holster/v4 v4.0.7-0.20220131220341-27edad302e74 h1:y6kTxO1ea4
 github.com/mailgun/holster/v4 v4.0.7-0.20220131220341-27edad302e74/go.mod h1:2/LRWESNyVAhsBFHXOsTQu32NSSIwIAWCOfnd5KeEV0=
 github.com/mailgun/holster/v4 v4.0.7-0.20220201175820-0199e96cfe57 h1:VahvWjyLrswXTqWiJnhkDlaRQ8NLxAvMHgUMHVFjHAI=
 github.com/mailgun/holster/v4 v4.0.7-0.20220201175820-0199e96cfe57/go.mod h1:2/LRWESNyVAhsBFHXOsTQu32NSSIwIAWCOfnd5KeEV0=
+github.com/mailgun/holster/v4 v4.1.0 h1:pcFK44AtRAnWmiBpA8t0Cwb/GDkr6nGm8wsOtfPQN10=
+github.com/mailgun/holster/v4 v4.1.0/go.mod h1:2/LRWESNyVAhsBFHXOsTQu32NSSIwIAWCOfnd5KeEV0=
 github.com/matttproud/golang_protobuf_extensions v1.0.1 h1:4hp9jkHxhMHkqkrB3Ix0jegS5sx/RkqARlsWZ6pIwiU=
 github.com/matttproud/golang_protobuf_extensions v1.0.1/go.mod h1:D8He9yQNgCq6Z5Ld7szi9bcBfOoFv/3dc6xSMkL2PC0=
 github.com/miekg/dns v1.1.26/go.mod h1:bPDLeHnStXmXAq1m/Ch/hvfNHr14JKNPMBo3VZKjuso=

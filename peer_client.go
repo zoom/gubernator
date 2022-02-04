@@ -134,7 +134,7 @@ func (c *PeerClient) connect(ctx context.Context) (err error) {
 			return nil
 		}
 
-		// Setup Opentracing interceptor to propagate spans.
+		// Setup OpenTelemetry interceptor to propagate spans.
 		opts := []grpc.DialOption{
 			grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor()),
 			grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor()),

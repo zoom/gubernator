@@ -412,7 +412,8 @@ func (c *PeerClient) run() {
 
 					go c.sendQueue(ctx, queue)
 					queue = nil
-					interval.Next()
+					// TODO: The `interval` timer should be reset to abort the
+					// pending tick that's still scheduled.
 					return nil
 				}
 

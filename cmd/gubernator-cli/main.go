@@ -164,7 +164,7 @@ func sendRequest(ctx context.Context, client guber.V1Client, req *guber.GetRateL
 	ctx = tracing.StartScope(ctx)
 	defer tracing.EndScope(ctx, nil)
 
-	ctx, cancel := ctxutil.WithTimeout(ctx, clock.Millisecond*500)
+	ctx, cancel := ctxutil.WithTimeout(ctx, timeout)
 
 	// Now hit our cluster with the rate limits
 	resp, err := client.GetRateLimits(ctx, req)

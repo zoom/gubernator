@@ -73,7 +73,7 @@ var asyncRequestRetriesCounter = prometheus.NewCounterVec(prometheus.CounterOpts
 }, []string{"name"})
 var queueLengthMetric = prometheus.NewSummaryVec(prometheus.SummaryOpts{
 	Name: "gubernator_queue_length",
-	Help: "The getRateLimitsBatch() queue length in PeerClient.",
+	Help: "The getRateLimitsBatch() queue length in PeerClient.  This represents rate checks queued by for batching to a remote peer.",
 	Objectives: map[float64]float64{
 		0.99: 0.001,
 	},
@@ -104,6 +104,13 @@ var poolWorkerQueueLength = prometheus.NewSummaryVec(prometheus.SummaryOpts{
 		0.99: 0.001,
 	},
 }, []string{"method", "worker"})
+var batchSendDurationMetric = prometheus.NewSummaryVec(prometheus.SummaryOpts{
+	Name: "gubernator_batch_send_duration",
+	Help: "The timings of batch send operations to a remote peer.",
+	Objectives: map[float64]float64{
+		0.99: 0.001,
+	},
+}, []string{"peerAddr"})
 
 // NewV1Instance instantiate a single instance of a gubernator peer and registers this
 // instance with the provided GRPCServer.
@@ -237,6 +244,15 @@ func (s *V1Instance) GetRateLimits(ctx context.Context, r *GetRateLimitsReq) (re
 			if len(req.Name) == 0 {
 				checkErrorCounter.WithLabelValues("Invalid request").Add(1)
 				resp.Responses[i] = &RateLimitResp{Error: "field 'namespace' cannot be empty"}
+				return nil
+			}
+
+			if ctx.Err() != nil {
+				err = errors.Wrap(ctx.Err(), "Error while iterating request items")
+				span.RecordError(err)
+				resp.Responses[i] = &RateLimitResp{
+					Error: err.Error(),
+				}
 				return nil
 			}
 
@@ -495,26 +511,64 @@ func (s *V1Instance) GetPeerRateLimits(ctx context.Context, r *GetPeerRateLimits
 	span := trace.SpanFromContext(ctx)
 	span.SetAttributes(attribute.Int("numRequests", len(r.Requests)))
 
-	var resp GetPeerRateLimitsResp
-
 	if len(r.Requests) > maxBatchSize {
 		err = fmt.Errorf("'PeerRequest.rate_limits' list too large; max size is '%d'", maxBatchSize)
 		checkErrorCounter.WithLabelValues("Request too large").Add(1)
 		return nil, status.Error(codes.OutOfRange, err.Error())
 	}
 
-	for _, req := range r.Requests {
-		rl, err := s.getRateLimit(ctx, req)
-		if err != nil {
-			// Return the error for this request
-			err = errors.Wrap(err, "Error in getRateLimit")
-			span.RecordError(err)
-			rl = &RateLimitResp{Error: err.Error()}
-			// checkErrorCounter is updated within getRateLimit().
-		}
-		resp.RateLimits = append(resp.RateLimits, rl)
+	// Invoke each rate limit request.
+	type reqIn struct {
+		idx int
+		req *RateLimitReq
 	}
-	return &resp, nil
+	type respOut struct {
+		idx int
+		rl  *RateLimitResp
+	}
+
+	resp := &GetPeerRateLimitsResp{
+		RateLimits: make([]*RateLimitResp, len(r.Requests)),
+	}
+	respChan := make(chan respOut)
+	var respWg sync.WaitGroup
+	respWg.Add(1)
+
+	go func() {
+		// Capture each response and keep in stable order.
+		for out := range respChan {
+			resp.RateLimits[out.idx] = out.rl
+		}
+
+		respWg.Done()
+	}()
+
+	// Fan out requests.
+	concurrencyLimit := s.conf.PoolWorkers
+	fan := syncutil.NewFanOut(concurrencyLimit)
+	for idx, req := range r.Requests {
+		fan.Run(func(in interface{}) error {
+			rin := in.(reqIn)
+			rl, err := s.getRateLimit(ctx, rin.req)
+			if err != nil {
+				// Return the error for this request
+				err = errors.Wrap(err, "Error in getRateLimit")
+				span.RecordError(err)
+				rl = &RateLimitResp{Error: err.Error()}
+				// checkErrorCounter is updated within getRateLimit().
+			}
+
+			respChan <- respOut{rin.idx, rl}
+			return nil
+		}, reqIn{idx, req})
+	}
+
+	// Wait for all requests to be handled, then clean up.
+	_ = fan.Wait()
+	close(respChan)
+	respWg.Wait()
+
+	return resp, nil
 }
 
 // HealthCheck Returns the health of our instance.
@@ -708,10 +762,6 @@ func (s *V1Instance) GetPeer(ctx context.Context, key string) (client *PeerClien
 	defer funcTimer.ObserveDuration()
 	lockTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("V1Instance.GetPeer_RLock"))
 
-	if ctx.Err() != nil {
-		return nil, ctx.Err()
-	}
-
 	s.peerMutex.RLock()
 	defer s.peerMutex.RUnlock()
 	span.AddEvent("peerMutex.RLock()")
@@ -750,6 +800,7 @@ func (s *V1Instance) Describe(ch chan<- *prometheus.Desc) {
 	overLimitCounter.Describe(ch)
 	checkCounter.Describe(ch)
 	poolWorkerQueueLength.Describe(ch)
+	batchSendDurationMetric.Describe(ch)
 }
 
 // Collect fetches metrics from the server for use by prometheus
@@ -765,6 +816,7 @@ func (s *V1Instance) Collect(ch chan<- prometheus.Metric) {
 	overLimitCounter.Collect(ch)
 	checkCounter.Collect(ch)
 	poolWorkerQueueLength.Collect(ch)
+	batchSendDurationMetric.Collect(ch)
 }
 
 // HasBehavior returns true if the provided behavior is set

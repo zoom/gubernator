@@ -369,7 +369,7 @@ func (c *PeerClient) getPeerRateLimitsBatch(ctx context.Context, r *RateLimitReq
 		}
 		return resp.rl, nil
 	case <-ctx2.Done():
-		return nil, ctx2.Err()
+		return nil, errors.Wrap(ctx2.Err(), "Error while waiting for response")
 	}
 }
 
@@ -395,10 +395,14 @@ func (c *PeerClient) run() {
 			}
 
 			_ = tracing.Scope(r.ctx, func(reqCtx context.Context) error {
+				span := trace.SpanFromContext(reqCtx)
+				span.SetAttributes(
+					attribute.String("peer.grpcAddress", c.conf.Info.GRPCAddress),
+				)
 				queue = append(queue, r)
 
 				// Send the queue if we reached our batch limit
-				if len(queue) == c.conf.Behavior.BatchLimit {
+				if len(queue) >= c.conf.Behavior.BatchLimit {
 					logrus.WithContext(reqCtx).
 						WithFields(logrus.Fields{
 							"queueLen":   len(queue),
@@ -406,13 +410,14 @@ func (c *PeerClient) run() {
 						}).
 						Info("run() reached batch limit")
 
-					c.sendQueue(reqCtx, queue)
+					go c.sendQueue(ctx, queue)
 					queue = nil
+					interval.Next()
 					return nil
 				}
 
-				// If this is our first queued item since last send
-				// queue the next interval
+				// If this is our first enqueued item since last
+				// sendQueue, reset interval timer.
 				if len(queue) == 1 {
 					interval.Next()
 				}
@@ -422,16 +427,18 @@ func (c *PeerClient) run() {
 
 		case <-interval.C:
 			if len(queue) != 0 {
-				ctx2 := tracing.StartScope(ctx)
-				intervalSpan := trace.SpanFromContext(ctx2)
-				intervalSpan.SetAttributes(
-					attribute.String("batchWait", c.conf.Behavior.BatchWait.String()),
-				)
+				go func() {
+					ctx2 := tracing.StartScope(ctx)
+					intervalSpan := trace.SpanFromContext(ctx2)
+					intervalSpan.SetAttributes(
+						attribute.String("batchWait", c.conf.Behavior.BatchWait.String()),
+					)
 
-				c.sendQueue(ctx2, queue)
-				queue = nil
+					c.sendQueue(ctx2, queue)
+					queue = nil
 
-				tracing.EndScope(ctx2, nil)
+					tracing.EndScope(ctx2, nil)
+				}()
 			}
 		}
 	}
@@ -443,8 +450,13 @@ func (c *PeerClient) sendQueue(ctx context.Context, queue []*request) {
 	ctx = tracing.StartScope(ctx)
 	defer tracing.EndScope(ctx, nil)
 	span := trace.SpanFromContext(ctx)
-	span.SetAttributes(attribute.Int("queueLen", len(queue)))
+	span.SetAttributes(
+		attribute.Int("queueLen", len(queue)),
+		attribute.String("peer.grpcAddress", c.conf.Info.GRPCAddress),
+	)
 
+	batchSendTimer := prometheus.NewTimer(batchSendDurationMetric.WithLabelValues(c.conf.Info.GRPCAddress))
+	defer batchSendTimer.ObserveDuration()
 	funcTimer := prometheus.NewTimer(funcTimeMetric.WithLabelValues("PeerClient.sendQueue"))
 	defer funcTimer.ObserveDuration()
 

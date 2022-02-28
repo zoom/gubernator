@@ -380,6 +380,7 @@ func (c *PeerClient) run() {
 	defer interval.Stop()
 
 	var queue []*request
+	var queueMutex sync.Mutex
 
 	for {
 		ctx := context.Background()
@@ -388,9 +389,13 @@ func (c *PeerClient) run() {
 		case r, ok := <-c.queue:
 			// If the queue has shutdown, we need to send the rest of the queue
 			if !ok {
+				queueMutex.Lock()
+
 				if len(queue) > 0 {
 					c.sendQueue(ctx, queue)
 				}
+
+				queueMutex.Unlock()
 				return
 			}
 
@@ -399,6 +404,9 @@ func (c *PeerClient) run() {
 				span.SetAttributes(
 					attribute.String("peer.grpcAddress", c.conf.Info.GRPCAddress),
 				)
+
+				queueMutex.Lock()
+				defer queueMutex.Unlock()
 				queue = append(queue, r)
 
 				// Send the queue if we reached our batch limit
@@ -410,8 +418,11 @@ func (c *PeerClient) run() {
 						}).
 						Info("run() reached batch limit")
 
-					go c.sendQueue(ctx, queue)
+					queue2 := queue
 					queue = nil
+
+					go c.sendQueue(ctx, queue2)
+
 					// TODO: The `interval` timer should be reset to abort the
 					// pending tick that's still scheduled.
 					return nil
@@ -427,18 +438,22 @@ func (c *PeerClient) run() {
 			})
 
 		case <-interval.C:
-			if len(queue) != 0 {
+			queueMutex.Lock()
+			defer queueMutex.Unlock()
+
+			if len(queue) > 0 {
+				queue2 := queue
+				queue = nil
+
 				go func() {
 					ctx2 := tracing.StartScope(ctx)
+					defer tracing.EndScope(ctx2, nil)
 					intervalSpan := trace.SpanFromContext(ctx2)
 					intervalSpan.SetAttributes(
 						attribute.String("batchWait", c.conf.Behavior.BatchWait.String()),
 					)
 
-					c.sendQueue(ctx2, queue)
-					queue = nil
-
-					tracing.EndScope(ctx2, nil)
+					c.sendQueue(ctx2, queue2)
 				}()
 			}
 		}

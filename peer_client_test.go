@@ -84,7 +84,6 @@ func TestPeerClientShutdown(t *testing.T) {
 					}
 
 					assert.True(t, true, isExpectedErr)
-
 				}()
 			}
 

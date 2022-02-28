@@ -13,7 +13,6 @@ Configure with environment variables, such as:
 
 | Name                                 | Description |
 | ------------------------------------ | ----------- |
-| `OTEL_SERVICE_NAME`                  | Service name. |
 | `OTEL_EXPORTER_JAEGER_AGENT_HOST`    | Jaeger server hostname or IP. |
 | `OTEL_EXPORTER_JAEGER_SAMPLER_TYPE`  | The sampler type: `remote`, `const`, `probablistic`, or `ratelimiting`. |
 | `OTEL_EXPORTER_JAEGER_SAMPLER_PARAM` | The sampler parameter. |

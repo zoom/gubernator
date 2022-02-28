@@ -35,6 +35,9 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 )
@@ -64,8 +67,22 @@ func main() {
 		log.SetLevel(logrus.ErrorLevel)
 	}
 
+	// Initialize tracing.
+	res, err := resource.Merge(
+		resource.Default(),
+		resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("gubernator-cli"),
+		),
+	)
+	if err != nil {
+		log.WithError(err).Fatal("Error in resource.Merge")
+	}
+
 	ctx, _, err := tracing.InitTracing(context.Background(),
-		"github.com/mailgun/gubernator/v2/cmd/gubernator-cli")
+		"github.com/mailgun/gubernator/v2/cmd/gubernator-cli",
+		sdktrace.WithResource(res),
+	)
 	if err != nil {
 		log.WithError(err).Warn("Error in tracing.InitTracing")
 	}

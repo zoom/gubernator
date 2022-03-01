@@ -70,7 +70,7 @@ func main() {
 	}
 
 	ctx, _, err := tracing.InitTracing(context.Background(),
-		"github.com/mailgun/gubernator/v2/cmd/gubernator",
+		"github.com/mailgun/gubernator/v2",
 		sdktrace.WithResource(res),
 	)
 	if err != nil {

@@ -380,7 +380,6 @@ func (c *PeerClient) run() {
 	defer interval.Stop()
 
 	var queue []*request
-	var queueMutex sync.Mutex
 
 	for {
 		ctx := context.Background()
@@ -389,13 +388,9 @@ func (c *PeerClient) run() {
 		case r, ok := <-c.queue:
 			// If the queue has shutdown, we need to send the rest of the queue
 			if !ok {
-				queueMutex.Lock()
-
 				if len(queue) > 0 {
 					c.sendQueue(ctx, queue)
 				}
-
-				queueMutex.Unlock()
 				return
 			}
 
@@ -405,8 +400,6 @@ func (c *PeerClient) run() {
 					attribute.String("peer.grpcAddress", c.conf.Info.GRPCAddress),
 				)
 
-				queueMutex.Lock()
-				defer queueMutex.Unlock()
 				queue = append(queue, r)
 
 				// Send the queue if we reached our batch limit
@@ -438,11 +431,9 @@ func (c *PeerClient) run() {
 			})
 
 		case <-interval.C:
-			queueMutex.Lock()
-			defer queueMutex.Unlock()
+			queue2 := queue
 
-			if len(queue) > 0 {
-				queue2 := queue
+			if len(queue2) > 0 {
 				queue = nil
 
 				go func() {

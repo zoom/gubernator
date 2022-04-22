@@ -1,5 +1,5 @@
 apiVersion: v2
-name: helm
+name: gubernator
 description: A Helm Chart for gubernator
 
 type: application

@@ -13,7 +13,10 @@ jobs:
         uses: actions/checkout@v2
         
       - name: Update 'version' file
-        run: echo "${{ github.event.release.tag_name }}" > version
+        run: |
+          echo "${{ github.event.release.tag_name }}" > version
+          sed -i "s/^version:.*$/version: ${{ github.event.release.tag_name }}/" deploy/helm/Chart.yaml
+          sed -i "s/^appVersion:.*$/appVersion: ${{ github.event.release.tag_name }}/" deploy/helm/Chart.yaml
    
       # Buildx Needs QEMU
       - name: Set up QEMU
@@ -34,8 +37,8 @@ jobs:
         uses: docker/build-push-action@v2
         with:
           tags: |
-            ghcr.io/mailgun/gubernator:${{ github.event.release.tag_name }}
-            ghcr.io/mailgun/gubernator:latest
+            ghcr.io/zoom/gubernator:${{ github.event.release.tag_name }}
+            ghcr.io/zoom/gubernator:latest
           build-args: |
             VERSION=${{ github.event.release.tag_name }}
           push: true           
@@ -47,4 +50,11 @@ jobs:
           default_author: github_actions
           message: 'Update version number'
           branch: master
-          add: 'version'
+          add: '["version", "deploy/helm/Chart.yaml"]'
+
+      # Publish the Helm chart
+      - name: Publish Helm chart
+        uses: stefanprodan/helm-gh-pages@master
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          charts_dir: deploy/helm

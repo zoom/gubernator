@@ -14,9 +14,10 @@ jobs:
         
       - name: Update 'version' file
         run: |
-          echo "${{ github.event.release.tag_name }}" > version
-          sed -i "s/^version:.*$/version: ${{ github.event.release.tag_name }}/" charts/gubernator/Chart.yaml
-          sed -i "s/^appVersion:.*$/appVersion: ${{ github.event.release.tag_name }}/" charts/gubernator/Chart.yaml
+          export VERSION="${{ github.event.release.tag_name }}"
+          echo "$VERSION" > version
+          sed -i "s/^version:.*$/version: ${VERSION:1}/" charts/gubernator/Chart.yaml
+          sed -i "s/^appVersion:.*$/appVersion: ${VERSION:1}/" charts/gubernator/Chart.yaml
    
       # Buildx Needs QEMU
       - name: Set up QEMU

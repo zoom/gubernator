@@ -2,6 +2,16 @@ apiVersion: v1
 entries:
   gubernator:
   - apiVersion: v2
+    appVersion: 2.0.0-rc.19-4
+    created: "2022-04-28T15:26:47.527831298Z"
+    description: A Helm Chart for gubernator
+    digest: b2060412ce3b3605f4b3ba6fd1774e055f78c74946beddf95849187f57abaf42
+    name: gubernator
+    type: application
+    urls:
+    - https://zoom.github.io/gubernator/gubernator-2.0.0-rc.19-4.tgz
+    version: 2.0.0-rc.19-4
+  - apiVersion: v2
     appVersion: v2.0.0-rc.19-3
     created: "2022-04-22T17:22:49.388333347Z"
     description: A Helm Chart for gubernator
@@ -21,4 +31,4 @@ entries:
     urls:
     - https://zoom.github.io/gubernator/gubernator-v2.0.0-rc.19-2.tgz
     version: v2.0.0-rc.19-2
-generated: "2022-04-22T17:22:49.385551342Z"
+generated: "2022-04-28T15:26:47.526092387Z"
